@@ -20,25 +20,11 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Buscador de ofertas activado.")
+        self.wfile.write(b"Bot Intelligence-Mode Activo")
 
 def run_web_server():
     server = HTTPServer(('0.0.0.0', 10000), SimpleHandler)
     server.serve_forever()
-
-# --- ENVÍO DE MENSAJE CON LINKS AZULES ---
-def enviar_telegram(mensaje):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": mensaje,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True # Evita que se llenen de vistas previas de la web
-    }
-    try:
-        requests.post(url, json=payload)
-    except:
-        pass
 
 class TLSAdapter(HTTPAdapter):
     def init_poolmanager(self, *args, **kwargs):
@@ -49,8 +35,44 @@ class TLSAdapter(HTTPAdapter):
         kwargs['ssl_context'] = context
         return super(TLSAdapter, self).init_poolmanager(*args, **kwargs)
 
+# --- FUNCIÓN PARA OBTENER EL RANKING ---
+def obtener_top_postulantes(session, id_oferta):
+    url_postulantes = "https://servicios3.abc.gob.ar/valoracion.docente/api/apd.oferta.postulante/select"
+    params = {
+        "q": f"idoferta:{id_oferta}",
+        "sort": "puntaje desc",
+        "rows": "3",
+        "wt": "json"
+    }
+    try:
+        r = session.get(url_postulantes, params=params, verify=False)
+        if r.status_code == 200:
+            postulantes = r.json().get("response", {}).get("docs", [])
+            if not postulantes:
+                return "_Sin postulantes aún_"
+            
+            resumen = ""
+            for i, p in enumerate(postulantes, 1):
+                nombre = f"{p.get('apellido', '')} {p.get('nombre', '')}".title()
+                puntaje = p.get('puntaje', '0.00')
+                vuelta = p.get('numeroVuelta', '1')
+                prioridad = p.get('prioridadoferta', '-')
+                resumen += f"  {i}º {nombre} | *{puntaje} pts* (V:{vuelta} P:{prioridad})\n"
+            return resumen
+    except:
+        return "_Error al cargar ranking_"
+    return "_Sin datos_"
+
+def enviar_telegram(mensaje):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": mensaje, "parse_mode": "Markdown", "disable_web_page_preview": True}
+    try:
+        requests.post(url, json=payload)
+    except:
+        pass
+
 def monitorear():
-    print("[*] Monitoreo con diseño de links iniciado...", flush=True)
+    print("[*] Monitoreo con Ranking de Postulantes iniciado...", flush=True)
     ofertas_avisadas = set()
     
     while True:
@@ -64,53 +86,47 @@ def monitorear():
             payload = {'option': 'credential', 'target': 'https://menu.abc.gob.ar/', 'Ecom_User_ID': CUIL, 'Ecom_Password': PASSWORD}
             session.post(login_url, data=payload, verify=False)
             
-            # Consulta
+            # Consulta Ofertas
             url_solr = "https://servicios3.abc.gob.ar/valoracion.docente/api/apd.oferta.encabezado/select"
             params = {"q": 'descdistrito:"GENERAL PUEYRREDON" AND estado:"Designada"', "rows": "1000", "wt": "json"}
             r = session.get(url_solr, params=params, verify=False)
             
             if r.status_code == 200:
                 docs = r.json().get("response", {}).get("docs", [])
-                nuevos = []
+                nuevos = [o for o in docs if "MAESTRO DE GRADO" in str(o.get("cargo","")).upper() and str(o.get("jornada","")).upper() == "JC"]
                 
-                for oferta in docs:
-                    cargo = str(oferta.get("cargo", "")).upper()
-                    jornada = str(oferta.get("jornada", "")).upper()
-                    if "MAESTRO DE GRADO" in cargo and jornada == "JC":
-                        id_o = oferta.get("idoferta")
-                        if id_o not in ofertas_avisadas:
-                            nuevos.append(oferta)
-                            ofertas_avisadas.add(id_o)
+                # Filtrar solo los que no avisamos
+                nuevos_reales = []
+                for n in nuevos:
+                    if n.get("idoferta") not in ofertas_avisadas:
+                        nuevos_reales.append(n)
+                        ofertas_avisadas.add(n.get("idoferta"))
 
-                if nuevos:
-                    # Armando el mensaje estético
-                    cuerpo_mensaje = "🚨 **¡NUEVOS CARGOS DETECTADOS!** 🚨\n\n"
+                if nuevos_reales:
+                    cuerpo = "🚨 **RANKING DE JORNADA COMPLETA** 🚨\n\n"
                     ts = int(time.time() * 1000)
                     
-                    for cargo_info in nuevos:
-                        escuela = cargo_info.get('escuela', 'N/A')
-                        area = cargo_info.get('cargo', 'N/A')
-                        curso = cargo_info.get('curso', 'N/A')
-                        div = cargo_info.get('division', 'N/A')
-                        id_o = cargo_info.get('idoferta')
-                        id_d = cargo_info.get('iddetalle') or id_o
+                    for info in nuevos_reales:
+                        id_o = info.get('idoferta')
+                        id_d = info.get('iddetalle') or id_o
+                        
+                        # Buscamos el Top 3 para esta escuela
+                        ranking = obtener_top_postulantes(session, id_o)
                         
                         link = f"https://misservicios.abc.gob.ar/actos.publicos.digitales/postulantes/?oferta={id_o}&detalle={id_d}&_t={ts}"
                         
-                        # Bloque de información
-                        cuerpo_mensaje += f"🏫 **Escuela:** {escuela}\n"
-                        cuerpo_mensaje += f"📚 **Área:** `{area}`\n"
-                        cuerpo_mensaje += f"👥 **Curso/Div:** {curso} - {div}\n"
-                        cuerpo_mensaje += f"🔗 [CLIC AQUÍ PARA POSTULARSE]({link})\n"
-                        cuerpo_mensaje += "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
+                        cuerpo += f"🏫 **Escuela:** {info.get('escuela')}\n"
+                        cuerpo += f"📚 **Área:** `{info.get('cargo')}`\n"
+                        cuerpo += f"👥 **Curso/Div:** {info.get('curso')} - {info.get('division')}\n"
+                        cuerpo += f"🏆 **Top 3 Candidatos:**\n{ranking}"
+                        cuerpo += f"🔗 [CLIC AQUÍ PARA POSTULARSE]({link})\n"
+                        cuerpo += "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
                     
-                    enviar_telegram(cuerpo_mensaje)
-                    print(f"[+] Informe enviado ({len(nuevos)} cargos).", flush=True)
-
-            print("[*] Sin novedades en esta vuelta.", flush=True)
+                    enviar_telegram(cuerpo)
+            print("[*] Vuelta de monitoreo completa.", flush=True)
         except Exception as e:
             print(f"[-] Error: {e}", flush=True)
-            
+        
         time.sleep(900)
 
 if __name__ == "__main__":
