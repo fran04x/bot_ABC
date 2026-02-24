@@ -79,7 +79,7 @@ def monitorear():
             
             # Consulta de Ofertas Mar del Plata
             url_solr = "https://servicios3.abc.gob.ar/valoracion.docente/api/apd.oferta.encabezado/select"
-            params = {"q": 'descdistrito:"GENERAL PUEYRREDON" AND estado:"Publicada"', "rows": "1000", "wt": "json"}
+            params = {"q": 'descdistrito:"GENERAL PUEYRREDON" AND estado:"Designada"', "rows": "1000", "wt": "json"}
             r = session.get(url_solr, params=params, verify=False)
             
             if r.status_code == 200:
