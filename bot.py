@@ -21,7 +21,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot en modo Diagnostico Activo")
+        self.wfile.write(b"Bot Masivo Activo")
 
 def run_web_server():
     server = HTTPServer(('0.0.0.0', 10000), SimpleHandler)
@@ -40,32 +40,27 @@ def enviar_telegram(mensaje):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": mensaje, "parse_mode": "Markdown", "disable_web_page_preview": True}
     try:
-        r = requests.post(url, json=payload)
-        print(f"[*] Telegram respondió: {r.status_code}", flush=True)
-    except Exception as e:
-        print(f"[-] Error enviando a Telegram: {e}", flush=True)
+        requests.post(url, json=payload)
+    except:
+        pass
 
 def obtener_top_postulantes(session, id_oferta):
-    url_postulantes = "https://servicios3.abc.gob.ar/valoracion.docente/api/apd.oferta.postulante/select"
+    url_p = "https://servicios3.abc.gob.ar/valoracion.docente/api/apd.oferta.postulante/select"
     params = {"q": f"idoferta:{id_oferta}", "sort": "puntaje desc", "rows": "3", "wt": "json"}
     try:
-        r = session.get(url_postulantes, params=params, verify=False)
+        r = session.get(url_p, params=params, verify=False)
         if r.status_code == 200:
-            postulantes = r.json().get("response", {}).get("docs", [])
-            if not postulantes: return "_Sin postulantes aún_"
-            resumen = ""
-            for i, p in enumerate(postulantes, 1):
-                nombre = f"{p.get('apellido', '')} {p.get('nombre', '')}".title()
-                resumen += f"  {i}º {nombre} | *{p.get('puntaje', '0.00')} pts*\n"
-            return resumen
+            docs = r.json().get("response", {}).get("docs", [])
+            if not docs: return "_Sin postulantes aún_"
+            res = ""
+            for i, p in enumerate(docs, 1):
+                res += f"  {i}º {p.get('apellido','')} | *{p.get('puntaje','0.00')} pts*\n"
+            return res
     except: return "_Error en ranking_"
     return "_Sin datos_"
 
 def monitorear():
-    print("[*] Iniciando monitoreo de prueba...", flush=True)
-    # MENSAJE DE PRUEBA INICIAL
-    enviar_telegram("🚀 **Test:** El bot arrancó y está buscando ofertas...")
-    
+    print("[*] Monitoreo masivo iniciado...", flush=True)
     ofertas_avisadas = set()
     
     while True:
@@ -79,48 +74,52 @@ def monitorear():
             payload = {'option': 'credential', 'target': 'https://menu.abc.gob.ar/', 'Ecom_User_ID': CUIL, 'Ecom_Password': PASSWORD}
             session.post(login_url, data=payload, verify=False)
             
-            # Consulta
+            # Consulta (Designadas para probar)
             url_solr = "https://servicios3.abc.gob.ar/valoracion.docente/api/apd.oferta.encabezado/select"
-            # PROBANDO CON DESIGNADA
             params = {"q": 'descdistrito:"GENERAL PUEYRREDON" AND estado:"Designada"', "rows": "1000", "wt": "json"}
             r = session.get(url_solr, params=params, verify=False)
             
             if r.status_code == 200:
                 docs = r.json().get("response", {}).get("docs", [])
-                print(f"[*] Total de ofertas 'Designada' encontradas: {len(docs)}", flush=True)
+                # Filtro por nombre de cargo
+                nuevos_hallazgos = [o for o in docs if "MAESTRO DE GRADO" in str(o.get("cargo","")).upper()]
                 
-                # FILTRO RELAJADO PARA PRUEBAS: Cualquier cargo que diga Maestro de Grado
-                nuevos = [o for o in docs if "MAESTRO DE GRADO" in str(o.get("cargo","")).upper()]
-                print(f"[*] Ofertas que pasaron el filtro de nombre: {len(nuevos)}", flush=True)
+                print(f"[*] Encontrados: {len(nuevos_hallazgos)} maestros de grado.", flush=True)
 
-                cuerpo = "🚨 **RESULTADOS DE PRUEBA (DESIGNADAS)** 🚨\n\n"
-                encontró_algo = False
+                bloque_mensaje = ""
+                contador_en_bloque = 0
                 ts = int(time.time() * 1000)
 
-                for info in nuevos:
+                for info in nuevos_hallazgos:
                     id_o = info.get('idoferta')
                     if id_o not in ofertas_avisadas:
-                        encontró_algo = True
                         ranking = obtener_top_postulantes(session, id_o)
                         link = f"https://misservicios.abc.gob.ar/actos.publicos.digitales/postulantes/?oferta={id_o}&detalle={info.get('iddetalle', id_o)}&_t={ts}"
                         
-                        cuerpo += f"🏫 **Escuela:** {info.get('escuela')}\n"
-                        cuerpo += f"📚 **Área:** `{info.get('cargo')}`\n"
-                        cuerpo += f"🏆 **Top 3:**\n{ranking}\n"
-                        cuerpo += f"🔗 [POSTULARSE]({link})\n"
-                        cuerpo += "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
+                        bloque_mensaje += f"🏫 **Escuela:** {info.get('escuela')}\n"
+                        bloque_mensaje += f"📚 **Área:** `{info.get('cargo')}`\n"
+                        bloque_mensaje += f"🏆 **Top 3:**\n{ranking}"
+                        bloque_mensaje += f"🔗 [POSTULARSE]({link})\n"
+                        bloque_mensaje += "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
+                        
                         ofertas_avisadas.add(id_o)
-                        # Limitamos a 5 para no explotar Telegram en el test
-                        if len(ofertas_avisadas) > 5: break
+                        contador_en_bloque += 1
 
-                if encontró_algo:
-                    enviar_telegram(cuerpo)
-            else:
-                print(f"[-] Error en el ABC: {r.status_code}", flush=True)
+                        # Cada 5 ofertas, mandamos el mensaje y empezamos uno nuevo
+                        if contador_en_bloque >= 5:
+                            enviar_telegram(f"🚨 **CARGOS DETECTADOS** 🚨\n\n{bloque_mensaje}")
+                            bloque_mensaje = ""
+                            contador_en_bloque = 0
+                            time.sleep(1) # Pausa técnica para Telegram
+
+                # Si sobraron ofertas sin mandar (menos de 5), las mandamos ahora
+                if bloque_mensaje:
+                    enviar_telegram(f"🚨 **CARGOS DETECTADOS** 🚨\n\n{bloque_mensaje}")
+
+            print("[*] Vuelta de monitoreo finalizada.", flush=True)
         except Exception as e:
-            print(f"[-] Error crítico: {e}", flush=True)
+            print(f"[-] Error: {e}", flush=True)
         
-        print("[*] Esperando 15 min...", flush=True)
         time.sleep(900)
 
 if __name__ == "__main__":
