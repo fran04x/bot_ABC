@@ -127,6 +127,21 @@ def monitorear():
         
         time.sleep(900) # 15 minutos
 
+# --- SERVIDOR WEB MEJORADO ---
+def run_web_server():
+    # Render usa el puerto 10000 por defecto para el plan Free
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), SimpleHandler)
+    print(f"[*] Servidor web escuchando en puerto {port}...", flush=True)
+    server.serve_forever()
+
 if __name__ == "__main__":
-    threading.Thread(target=monitorear, daemon=True).start()
-    run_web_server()
+    # 1. Iniciamos el servidor web en un hilo separado
+    web_thread = threading.Thread(target=run_web_server, daemon=True)
+    web_thread.start()
+    
+    # 2. Le damos 5 segundos para que Render vea que el puerto está abierto
+    time.sleep(5)
+    
+    # 3. Iniciamos el monitoreo en el hilo principal
+    monitorear()
