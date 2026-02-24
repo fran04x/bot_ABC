@@ -48,8 +48,8 @@ class TLSAdapter(HTTPAdapter):
         return super(TLSAdapter, self).init_poolmanager(*args, **kwargs)
 
 def monitorear():
-    print("[*] Bot iniciado en Render (Free Tier)", flush=True)
-    enviar_telegram("✅ **Bot activado en Render.**\nMonitoreo 24/7 en marcha.")
+    print("[*] Bot iniciado", flush=True)
+    enviar_telegram("✅ **Buscador activado.**\nMonitoreo 24/7 cada 15 minutos.")
     ofertas_avisadas = set()
     while True:
         session = requests.Session()
@@ -78,7 +78,7 @@ def monitorear():
             print("[*] Vuelta de monitoreo completa.", flush=True)
         except Exception as e:
             print(f"[-] Error: {e}", flush=True)
-        time.sleep(1800)
+        time.sleep(900)
 
 if __name__ == "__main__":
     # Corremos el bot en un hilo y el servidor web en otro
