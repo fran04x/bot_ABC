@@ -617,6 +617,11 @@ def monitorear():
 
         print("[*] Monitor ACTIVO: Lock adquirido. Iniciando...", flush=True)
 
+        # --- NUEVA LÓGICA: LIMPIEZA TOTAL AL ARRANCAR ---
+        print("[*] Limpiando mensajes fantasmas de la sesión anterior...", flush=True)
+        limpiar_chat()
+        # ------------------------------------------------
+
         msg_arranque = (
             "✅ <b>INICIADO CORRECTAMENTE</b>\n\n"
             "El sistema está activo y escaneando el ABC con estos filtros:\n"
@@ -775,8 +780,8 @@ def monitorear():
                                     txt = f"🏫 <b>Escuela:</b> <code>{escuela}</code>\n"
                                     txt += f"📚 <b>Área:</b> {cargo}\n"
                                     txt += f"🕒 <b>Inicio Oferta:</b> {inicio_oferta}\n"
-                                        if curso != "-" or division != "-":
-                                    txt += f"👥 <b>Curso/Div:</b> {curso} - {division}\n"
+                                    if curso != "-" or division != "-":
+                                        txt += f"👥 <b>Curso/Div:</b> {curso} - {division}\n"
                                     txt += f"⏱ <b>Jornada:</b> {jornada_texto}\n"
                                     txt += f"🏆 <b>Puntajes:</b>\n{ranking}"
                                     txt += f"🔗 <a href=\"{html.escape(link, quote=True)}\">VER ESCUELA</a>\n"
