@@ -140,7 +140,13 @@ def escuchar_botones():
     offset = 0
     url_updates = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
     url_answer = f"https://api.telegram.org/bot{TOKEN}/answerCallbackQuery"
+    url_delete_webhook = f"https://api.telegram.org/bot{TOKEN}/deleteWebhook"
     ultimo_clic = 0
+
+    try:
+        requests.post(url_delete_webhook, json={"drop_pending_updates": False}, timeout=REQUEST_TIMEOUT)
+    except Exception as e:
+        print(f"[!] No se pudo eliminar webhook: {e}", flush=True)
     
     try:
         r = requests.get(url_updates, params={"offset": offset, "timeout": 5}, timeout=10)
@@ -166,11 +172,11 @@ def escuchar_botones():
                         if data == "get_resultados":
                             ahora = time.time()
                             if ahora - ultimo_clic < 3:
-                                requests.get(url_answer, params={"callback_query_id": cb_id, "text": "⏳ Cargando...", "show_alert": False})
+                                requests.get(url_answer, params={"callback_query_id": cb_id, "text": "⏳ Cargando...", "show_alert": False}, timeout=REQUEST_TIMEOUT)
                                 continue
                             
                             ultimo_clic = ahora
-                            requests.get(url_answer, params={"callback_query_id": cb_id})
+                            requests.get(url_answer, params={"callback_query_id": cb_id}, timeout=REQUEST_TIMEOUT)
                             
                             limpiar_chat()
                             
@@ -186,7 +192,10 @@ def escuchar_botones():
                                         enviar_telegram(bloque, con_boton=poner_boton, es_permanente=False)
                                         bloque = ""
                                         time.sleep(1) 
+            else:
+                print(f"[!] getUpdates devolvió {r.status_code}: {r.text}", flush=True)
         except Exception as e:
+            print(f"[-] Error en escuchar_botones: {e}", flush=True)
             time.sleep(5)
 
 def obtener_top_postulantes(session, id_oferta):
