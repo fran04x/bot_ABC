@@ -119,6 +119,7 @@ def enviar_telegram(mensaje, silencioso=False, con_boton=False, es_permanente=Fa
                 sent_ids.append(message_id)
                 if not es_permanente:
                     MENSAJES_ENVIADOS.add(message_id)
+                    upstash_cmd("sadd", "mensajes_borrables", message_id) # <-- GUARDADO EN NUBE
             return
         except requests.RequestException as error:
             status = getattr(getattr(error, "response", None), "status_code", None)
@@ -132,6 +133,7 @@ def enviar_telegram(mensaje, silencioso=False, con_boton=False, es_permanente=Fa
                         sent_ids.append(message_id)
                         if not es_permanente:
                             MENSAJES_ENVIADOS.add(message_id)
+                            upstash_cmd("sadd", "mensajes_borrables", message_id) # <-- GUARDADO EN NUBE
                     return
                 except Exception:
                     pass
@@ -406,12 +408,29 @@ def enviar_ofertas_sin_cortes(
 def limpiar_chat():
     global MENSAJES_ENVIADOS
     url_delete = f"https://api.telegram.org/bot{TOKEN}/deleteMessage"
-    for msg_id in list(MENSAJES_ENVIADOS):
+    
+    # 1. Juntamos los de la memoria RAM actual
+    mensajes_a_borrar = set(MENSAJES_ENVIADOS)
+    
+    # 2. Rescatamos los fantasmas del bot anterior desde Upstash
+    fantasmas = upstash_cmd("smembers", "mensajes_borrables")
+    if fantasmas:
+        for msg_id in fantasmas:
+            try:
+                mensajes_a_borrar.add(int(msg_id))
+            except Exception:
+                pass
+                
+    # 3. Borramos todos de Telegram
+    for msg_id in list(mensajes_a_borrar):
         try:
             requests.post(url_delete, json={"chat_id": CHAT_ID, "message_id": msg_id}, timeout=5)
         except Exception:
             pass
+            
+    # 4. Limpiamos la memoria y la base de datos
     MENSAJES_ENVIADOS.clear()
+    upstash_cmd("del", "mensajes_borrables")
 
 # --- TELEGRAM: LISTENER DE BOTONES ---
 def escuchar_botones():
@@ -751,12 +770,11 @@ def monitorear():
                                 if estado_actual == "PUBLICADA":
                                     ranking = obtener_top_postulantes(session, id_o)
                                     link = f"https://misservicios.abc.gob.ar/actos.publicos.digitales/postulantes/?oferta={id_o}&detalle={info.get('iddetalle', id_o)}&_t={ts}"
-
                                     txt = f"🏫 <b>Escuela:</b> <code>{escuela}</code>\n"
-                                    txt += f"📚 <b>Área:</b> <code>{cargo}</code>\n"
+                                    txt += f"📚 <b>Área:</b> {cargo}\n"
                                     txt += f"🕒 <b>Inicio Oferta:</b> {inicio_oferta}\n"
                                     if curso != "-" or division != "-":
-                                        txt += f"👥 <b>Curso/Div:</b> {curso} - {division}\n"
+                                    txt += f"👥 <b>Curso/Div:</b> {curso} - {division}\n"
                                     txt += f"⏱ <b>Jornada:</b> {jornada_texto}\n"
                                     txt += f"🏆 <b>Puntajes:</b>\n{ranking}"
                                     txt += f"🔗 <a href=\"{html.escape(link, quote=True)}\">VER ESCUELA</a>\n"
