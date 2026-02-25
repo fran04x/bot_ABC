@@ -99,7 +99,7 @@ def enviar_telegram(mensaje, silencioso=False, con_boton=False, es_permanente=Fa
         
         if con_boton:
             payload["reply_markup"] = {
-                "inline_keyboard": [[{"text": "🔄 Obtener Resultados Actuales", "callback_data": CALLBACK_GET_RESULTADOS}]]
+                "inline_keyboard": [[{"text": "🔄 Actualizar resultados", "callback_data": CALLBACK_GET_RESULTADOS}]]
             }
             
         payload_plain = {"chat_id": CHAT_ID, "text": texto, "disable_web_page_preview": True, "disable_notification": silencioso}
@@ -582,27 +582,27 @@ def monitorear():
     
     while True: # Bucle de supervivencia
         if not adquirir_lock_instancia(LOCK_TTL_SEG, MONITOR_LOCK_KEY):
-            print("[!] Monitor pasivo: otra instancia está activa. Esperando pacientemente...", flush=True)
+            print("[!] Monitor pasivo: otra instancia está activa. Esperando liberacion del lock...", flush=True)
             time.sleep(15)
             continue
 
         print("[*] Monitor ACTIVO: Lock adquirido. Iniciando...", flush=True)
 
         msg_arranque = (
-            "✅ <b>SISTEMA INICIADO</b>\n\n"
-            "El bot está activo y escaneando el ABC con estos filtros:\n"
+            "✅ <b>INICIADO CORRECTAMENTE</b>\n\n"
+            "El sistema está activo y escaneando el ABC con estos filtros:\n"
             "📍 <b>Distrito:</b> General Pueyrredón\n"
-            "📚 <b>Cargo:</b> Maestro de Grado\n"
+            "📚 <b>Cargo:</b> Maestro de Grado (MG)\n"
             "⏱ <b>Jornada:</b> Simple y Completa\n"
             "📌 <b>Estado:</b> Ofertas 'Publicadas'\n\n"
-            "🌐 <a href='https://misservicios.abc.gob.ar/actos.publicos.digitales/'>Simular búsqueda visual en el portal</a>\n"
+            "🌐 <a href='https://misservicios.abc.gob.ar/actos.publicos.digitales/'>Ingresar al portal.</a>\n"
             "<i>(Ingresá manualmente: Gral. Pueyrredón + Maestro de Grado)</i>\n\n"
             "👇 Podés pedir el listado actual tocando el botón de abajo."
         )
         enviar_telegram(msg_arranque, con_boton=True, es_permanente=True)
 
         ofertas_estados_local = {}
-        HORAS_REPORTE = {6, 9, 14, 17, 20, 21}
+        HORAS_REPORTE = {6, 8, 11, 15, 17, 20}
         ultimo_reporte_enviado = None
         tz_ar = timezone(timedelta(hours=-3))
 
