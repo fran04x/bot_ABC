@@ -36,6 +36,8 @@ INSTANCE_LOCK_KEY = os.environ.get("INSTANCE_LOCK_KEY", "abcbot_instance_lock")
 LISTENER_LOCK_KEY = os.environ.get("LISTENER_LOCK_KEY", f"{INSTANCE_LOCK_KEY}:listener")
 MONITOR_LOCK_KEY = os.environ.get("MONITOR_LOCK_KEY", f"{INSTANCE_LOCK_KEY}:monitor")
 INSTANCE_OWNER = f"{os.environ.get('HOSTNAME', 'local')}-{os.getpid()}-{int(time.time())}"
+BOT_SESSION_ID = os.environ.get("BOT_SESSION_ID", f"{int(time.time())}-{os.getpid()}")[-24:]
+CALLBACK_GET_RESULTADOS = f"get_resultados:{BOT_SESSION_ID}"
 
 try:
     LOCK_TTL_SEG = int(os.environ.get("INSTANCE_LOCK_TTL_SECONDS", "1800"))
@@ -97,7 +99,7 @@ def enviar_telegram(mensaje, silencioso=False, con_boton=False, es_permanente=Fa
         
         if con_boton:
             payload["reply_markup"] = {
-                "inline_keyboard": [[{"text": "🔄 Obtener Resultados Actuales", "callback_data": "get_resultados"}]]
+                "inline_keyboard": [[{"text": "🔄 Obtener Resultados Actuales", "callback_data": CALLBACK_GET_RESULTADOS}]]
             }
             
         payload_plain = {"chat_id": CHAT_ID, "text": texto, "disable_web_page_preview": True, "disable_notification": silencioso}
@@ -432,7 +434,7 @@ def escuchar_botones():
                                 requests.get(url_answer, params={"callback_query_id": cb_id, "text": "⏳ Ya procesado", "show_alert": False}, timeout=REQUEST_TIMEOUT)
                                 continue
                             
-                            if data == "get_resultados":
+                            if data == CALLBACK_GET_RESULTADOS:
                                 ahora = time.time()
                                 if ahora - ultimo_clic < 3:
                                     requests.get(url_answer, params={"callback_query_id": cb_id, "text": "⏳ Cargando...", "show_alert": False}, timeout=REQUEST_TIMEOUT)
@@ -449,13 +451,6 @@ def escuchar_botones():
                                         },
                                         timeout=REQUEST_TIMEOUT
                                     )
-                                    if (ahora - ULTIMO_AVISO_NO_LISTO_TS) >= 60:
-                                        enviar_telegram(
-                                            "⏳ <i>El bot recién inició o aún no terminó de cargar datos. Esperá 1 minuto e intentá de nuevo.</i>",
-                                            silencioso=True,
-                                            es_permanente=False
-                                        )
-                                        ULTIMO_AVISO_NO_LISTO_TS = ahora
                                     continue
 
                                 with CACHE_LOCK:
@@ -482,6 +477,16 @@ def escuchar_botones():
                                     es_permanente=False,
                                     repetir_encabezado=False,
                                     pausa_segundos=1
+                                )
+                            elif isinstance(data, str) and data.startswith("get_resultados:"):
+                                requests.get(
+                                    url_answer,
+                                    params={
+                                        "callback_query_id": cb_id,
+                                        "text": "♻️ Bot reiniciado. Usá el botón del último mensaje de inicio.",
+                                        "show_alert": False
+                                    },
+                                    timeout=REQUEST_TIMEOUT
                                 )
                 else:
                     print(f"[!] getUpdates devolvió {r.status_code}: {r.text}", flush=True)
