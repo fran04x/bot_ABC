@@ -594,14 +594,13 @@ def monitorear():
         print("[*] Monitor ACTIVO: Lock adquirido. Iniciando...", flush=True)
 
         msg_arranque = (
-            "✅ <b>SISTEMA INICIADO</b>\n\n"
-            "El bot está activo y escaneando el ABC con estos filtros:\n"
+            "✅ <b>INICIADO CORRECTAMENTE</b>\n\n"
+            "El sistema está activo y escaneando el ABC con estos filtros:\n"
             "📍 <b>Distrito:</b> General Pueyrredón\n"
             "📚 <b>Cargo:</b> Maestro de Grado\n"
             "⏱ <b>Jornada:</b> Simple y Completa\n"
             "📌 <b>Estado:</b> Ofertas 'Publicadas'\n\n"
-            "🌐 <a href='https://misservicios.abc.gob.ar/actos.publicos.digitales/'>Simular búsqueda visual en el portal</a>\n"
-            "<i>(Ingresá manualmente: Gral. Pueyrredón + Maestro de Grado)</i>\n\n"
+            "🌐 <a href='https://misservicios.abc.gob.ar/actos.publicos.digitales/'>Ingresar a la página principal del portal</a>\n"
             "👇 Podés pedir el listado actual tocando el botón de abajo."
         )
         
@@ -749,7 +748,7 @@ def monitorear():
                                     ranking = obtener_top_postulantes(session, id_o)
                                     link = f"https://misservicios.abc.gob.ar/actos.publicos.digitales/postulantes/?oferta={id_o}&detalle={info.get('iddetalle', id_o)}&_t={ts}"
 
-                                    txt = f"🏫 <b>Escuela:</b> {escuela}\n"
+                                    txt = f"🏫 <b>Escuela:</b> <code>{escuela}</code>\n"
                                     txt += f"📚 <b>Área:</b> <code>{cargo}</code>\n"
                                     txt += f"🕒 <b>Inicio Oferta:</b> {inicio_oferta}\n"
                                     if curso != "-" or division != "-":
@@ -783,7 +782,7 @@ def monitorear():
                                 if temp_cache:
                                     enviar_ofertas_sin_cortes(
                                         temp_cache,
-                                        encabezado=f"📊 <b>LISTADO DE CARGOS ({len(temp_cache)} resultados.):</b>",
+                                        encabezado=f"📊 <b>LISTADO DE CARGOS ({len(temp_cache)} resultados):</b>",
                                         es_permanente=False,
                                         repetir_encabezado=False,
                                         pausa_segundos=1,
