@@ -38,7 +38,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot con Memoria de Estados Activo")
+        self.wfile.write(b"Bot con Memoria de Estados (JS/JC) Activo")
         
     def do_HEAD(self):
         self.send_response(200)
@@ -130,11 +130,10 @@ def obtener_top_postulantes(session, id_oferta):
     return "<i>Sin datos</i>"
 
 def monitorear():
-    print("[*] Monitoreo inteligente con máquina de estados iniciado...", flush=True)
-    # Reemplazamos el set() por un diccionario para guardar {id: estado}
+    print("[*] Monitoreo inteligente (JS/JC) iniciado...", flush=True)
     ofertas_estados_local = {} 
     
-    HORAS_REPORTE = {6, 9, 12, 15, 17, 20, 20, 22}
+    HORAS_REPORTE = {6, 9, 14, 17, 20, 21}
     ultimo_reporte_enviado = None
     tz_ar = timezone(timedelta(hours=-3))
     
@@ -151,18 +150,19 @@ def monitorear():
                 payload = {'option': 'credential', 'target': 'https://menu.abc.gob.ar/', 'Ecom_User_ID': CUIL, 'Ecom_Password': PASSWORD}
                 session.post(login_url, data=payload, verify=not INSECURE_SSL, timeout=REQUEST_TIMEOUT)
 
-                # LE PEDIMOS A SOLR LAS PUBLICADAS Y LAS DESIGNADAS
+                # Pedimos todo (Publicadas y Designadas)
                 url_solr = "https://servicios3.abc.gob.ar/valoracion.docente/api/apd.oferta.encabezado/select"
                 params = {"q": 'descdistrito:"GENERAL PUEYRREDON" AND (estado:"Publicada" OR estado:"Designada")', "rows": "1000", "wt": "json"}
                 r = session.get(url_solr, params=params, verify=not INSECURE_SSL, timeout=REQUEST_TIMEOUT)
             
                 if r.status_code == 200:
                     docs = r.json().get("response", {}).get("docs", [])
+                    # Al buscar "MAESTRO DE GRADO" sin filtrar por JC, atrapamos Jornada Simple y Completa
                     hallazgos = [o for o in docs if "MAESTRO DE GRADO" in str(o.get("cargo","")).upper()]
                     ts = int(time.time() * 1000)
 
                     for info in hallazgos:
-                        id_o = info.get('idoferta')
+                        id_o = str(info.get('idoferta'))
                         estado_actual = str(info.get('estado', '')).upper()
                         
                         estado_previo = None
@@ -186,16 +186,16 @@ def monitorear():
                         cambio_a_designada = False
 
                         if not estado_previo:
-                            # La vemos por primera vez
+                            # Primera vez que vemos esta oferta
                             if estado_actual == "PUBLICADA":
                                 es_nueva_y_publicada = True
-                            # Si la vemos por primera vez y ya está DESIGNADA, simplemente la memorizamos en silencio.
+                            # Si es "DESIGNADA" la primera vez, NO hacemos nada (ignora históricas)
                         else:
-                            # Ya la conocíamos. ¿Cambió?
+                            # Ya la conocíamos
                             if estado_previo == "PUBLICADA" and estado_actual == "DESIGNADA":
                                 cambio_a_designada = True
 
-                        # 3. ACTUALIZAR MEMORIA (Solo si es nueva o cambió)
+                        # 3. ACTUALIZAR MEMORIA (Solo si no existía o si cambió de estado)
                         if not estado_previo or (estado_previo != estado_actual):
                             if UPSTASH_URL and UPSTASH_TOKEN:
                                 try:
@@ -206,8 +206,9 @@ def monitorear():
                                 ofertas_estados_local[id_o] = estado_actual
 
                         # 4. PREPARAR MENSAJES
-                        escuela = html.escape(str(info.get('escuela', '')))
-                        cargo = html.escape(str(info.get('cargo', '')))
+                        escuela = html.escape(str(info.get('escuela', 'N/A')))
+                        cargo = html.escape(str(info.get('cargo', 'N/A')))
+                        jornada = html.escape(str(info.get('jornada', 'N/A')).upper()) # Sacamos la jornada (JS/JC)
                         
                         if es_nueva_y_publicada:
                             ranking = obtener_top_postulantes(session, id_o)
@@ -215,15 +216,16 @@ def monitorear():
                             
                             txt = f"🏫 <b>Escuela:</b> {escuela}\n"
                             txt += f"📚 <b>Área:</b> <code>{cargo}</code>\n"
-                            txt += f"🏆 <b>Top 3:</b>\n{ranking}"
+                            txt += f"⏱ <b>Jornada:</b> {jornada}\n"
+                            txt += f"🏆 <b>Puntajes:</b>\n{ranking}"
                             txt += f"🔗 <a href=\"{html.escape(link, quote=True)}\">VER ESCUELA</a>\n"
                             txt += "───────────────────\n"
                             buffer_nuevas.append(txt)
 
                         elif cambio_a_designada:
-                            # No hace falta ranking ni link, ya se cerró
                             txt = f"🏫 <b>Escuela:</b> {escuela}\n"
                             txt += f"📚 <b>Área:</b> <code>{cargo}</code>\n"
+                            txt += f"⏱ <b>Jornada:</b> {jornada}\n"
                             txt += "───────────────────\n"
                             buffer_cerradas.append(txt)
 
@@ -237,7 +239,7 @@ def monitorear():
                         for idx, txt in enumerate(buffer_nuevas, 1):
                             bloque += txt
                             if idx % 10 == 0 or idx == len(buffer_nuevas):
-                                enviar_telegram(f"🚨 <b>NUEVOS CARGOS ENCONTRADOS ({hora_str} hs)</b> 🚨\n\n{bloque}")
+                                enviar_telegram(f"🚨 <b>NUEVOS CARGOS (JS/JC) ({hora_str} hs)</b> 🚨\n\n{bloque}")
                                 bloque = ""
                                 time.sleep(2)
                                 
@@ -247,7 +249,7 @@ def monitorear():
                         for idx, txt in enumerate(buffer_cerradas, 1):
                             bloque += txt
                             if idx % 15 == 0 or idx == len(buffer_cerradas):
-                                enviar_telegram(f"❌ <b>CARGOS DESIGNADOS (Ya no disponibles)</b> ❌\n\n{bloque}", silencioso=True)
+                                enviar_telegram(f"❌ <b>CARGOS DESIGNADOS (Cerrados)</b> ❌\n\n{bloque}", silencioso=True)
                                 bloque = ""
                                 time.sleep(2)
                     
