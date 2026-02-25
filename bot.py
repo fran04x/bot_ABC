@@ -41,7 +41,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot Interactivo Activo")
+        self.wfile.write(b"Bot Interactivo y Formateado Activo")
         
     def do_HEAD(self):
         self.send_response(200)
@@ -74,7 +74,6 @@ def enviar_telegram(mensaje, silencioso=False, con_boton=False):
     def enviar_parte(texto):
         payload = {"chat_id": CHAT_ID, "text": texto, "parse_mode": "HTML", "disable_web_page_preview": True, "disable_notification": silencioso}
         
-        # Agregamos el botón si se solicita
         if con_boton:
             payload["reply_markup"] = {
                 "inline_keyboard": [[{"text": "🔄 Obtener Resultados Actuales", "callback_data": "get_resultados"}]]
@@ -115,7 +114,6 @@ def enviar_telegram(mensaje, silencioso=False, con_boton=False):
     for idx, parte in enumerate(partes, start=1):
         enviar_parte(parte)
 
-# --- HILO PARA ESCUCHAR EL BOTÓN ---
 def escuchar_botones():
     global CACHE_RESULTADOS
     offset = 0
@@ -135,7 +133,6 @@ def escuchar_botones():
                         data = cb.get("data")
                         
                         if data == "get_resultados":
-                            # Le respondemos a Telegram para que el botón no quede "cargando"
                             requests.get(url_answer, params={"callback_query_id": cb_id})
                             
                             if not CACHE_RESULTADOS:
@@ -148,7 +145,7 @@ def escuchar_botones():
                                     if idx % 10 == 0 or idx == len(CACHE_RESULTADOS):
                                         enviar_telegram(bloque)
                                         bloque = ""
-                                        time.sleep(1) # Pausa técnica para no saturar Telegram
+                                        time.sleep(1) 
         except Exception as e:
             time.sleep(5)
 
@@ -181,8 +178,21 @@ def monitorear():
     global CACHE_RESULTADOS
     print("[*] Monitoreo inteligente iniciado...", flush=True)
     
-    # MENSAJE DE ARRANQUE CON BOTÓN
-    enviar_telegram("✅ <b>SISTEMA INICIADO</b>\n\nEl bot está activo y conectado al ABC. Podés pedir el listado actual tocando el botón de abajo.", con_boton=True)
+    # MENSAJE DE ARRANQUE CON DETALLES DE FILTROS Y URLs
+    url_api = "https://servicios3.abc.gob.ar/valoracion.docente/api/apd.oferta.encabezado/select?q=descdistrito:%22GENERAL%20PUEYRREDON%22%20AND%20estado:%22Publicada%22&rows=1000&wt=json"
+    msg_arranque = (
+        "✅ <b>SISTEMA INICIADO</b>\n\n"
+        "El bot está activo y escaneando el ABC con estos filtros:\n"
+        "📍 <b>Distrito:</b> General Pueyrredón\n"
+        "📚 <b>Cargo:</b> Maestro de Grado\n"
+        "⏱ <b>Jornada:</b> Simple y Completa\n"
+        "📌 <b>Estado:</b> Ofertas 'Publicadas' (alertando 'Designadas' al cerrar)\n\n"
+        "🌐 <a href='https://misservicios.abc.gob.ar/actos.publicos.digitales/'>Simular búsqueda visual en el portal</a>\n"
+        "<i>(Ingresá manualmente: Gral. Pueyrredón + Maestro de Grado)</i>\n\n"
+        f"🤖 <a href='{url_api}'>Ver datos crudos (JSON del sistema)</a>\n\n"
+        "👇 Podés pedir el listado actual tocando el botón de abajo."
+    )
+    enviar_telegram(msg_arranque, con_boton=True)
     
     ofertas_estados_local = {} 
     HORAS_REPORTE = {6, 9, 14, 17, 20, 21}
@@ -192,7 +202,7 @@ def monitorear():
     while True:
         buffer_nuevas = []
         buffer_cerradas = []
-        temp_cache = [] # Bolsa temporal para guardar la foto del momento
+        temp_cache = [] 
         
         try:
             with requests.Session() as session:
@@ -248,24 +258,29 @@ def monitorear():
                             else:
                                 ofertas_estados_local[id_o] = estado_actual
 
-                        # Formateo visual
+                        # Traducción y formateo visual
                         escuela = html.escape(str(info.get('escuela', 'N/A')))
                         cargo = html.escape(str(info.get('cargo', 'N/A')))
-                        jornada = html.escape(str(info.get('jornada', 'N/A')).upper())
                         
-                        # Armado de texto para alertas y caché
+                        jornada_raw = str(info.get('jornada', '')).upper()
+                        if "JC" in jornada_raw:
+                            jornada_texto = "Completa"
+                        elif "JS" in jornada_raw:
+                            jornada_texto = "Simple"
+                        else:
+                            jornada_texto = html.escape(jornada_raw) if jornada_raw else "N/A"
+                        
                         if estado_actual == "PUBLICADA":
                             ranking = obtener_top_postulantes(session, id_o)
                             link = f"https://misservicios.abc.gob.ar/actos.publicos.digitales/postulantes/?oferta={id_o}&detalle={info.get('iddetalle', id_o)}&_t={ts}"
                             
                             txt = f"🏫 <b>Escuela:</b> {escuela}\n"
                             txt += f"📚 <b>Área:</b> <code>{cargo}</code>\n"
-                            txt += f"⏱ <b>Jornada:</b> {jornada}\n"
-                            txt += f"🏆 <b>Top 3:</b>\n{ranking}"
+                            txt += f"⏱ <b>Jornada:</b> {jornada_texto}\n"
+                            txt += f"🏆 <b>Puntajes:</b>\n{ranking}"
                             txt += f"🔗 <a href=\"{html.escape(link, quote=True)}\">VER ESCUELA</a>\n"
                             txt += "───────────────────\n"
                             
-                            # Lo guardamos siempre en la foto temporal para el botón
                             temp_cache.append(txt)
                             
                             if es_nueva_y_publicada:
@@ -274,11 +289,10 @@ def monitorear():
                         elif cambio_a_designada:
                             txt = f"🏫 <b>Escuela:</b> {escuela}\n"
                             txt += f"📚 <b>Área:</b> <code>{cargo}</code>\n"
-                            txt += f"⏱ <b>Jornada:</b> {jornada}\n"
+                            txt += f"⏱ <b>Jornada:</b> {jornada_texto}\n"
                             txt += "───────────────────\n"
                             buffer_cerradas.append(txt)
 
-                    # Actualizamos la memoria global para el botón
                     CACHE_RESULTADOS = temp_cache
 
                     ahora = datetime.now(tz_ar)
@@ -290,7 +304,7 @@ def monitorear():
                         for idx, txt in enumerate(buffer_nuevas, 1):
                             bloque += txt
                             if idx % 10 == 0 or idx == len(buffer_nuevas):
-                                enviar_telegram(f"🚨 <b>NUEVOS CARGOS (JS/JC) ({hora_str} hs)</b> 🚨\n\n{bloque}")
+                                enviar_telegram(f"🚨 <b>NUEVOS CARGOS ({hora_str} hs)</b> 🚨\n\n{bloque}")
                                 bloque = ""
                                 time.sleep(2)
                                 
@@ -319,15 +333,12 @@ def monitorear():
         time.sleep(900)
 
 if __name__ == "__main__":
-    # Lanzamos el servidor web
     web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
     
-    # Lanzamos el escucha de botones de Telegram
     telegram_thread = threading.Thread(target=escuchar_botones, daemon=True)
     telegram_thread.start()
     
     time.sleep(5)
     
-    # Iniciamos el bucle principal de revisión
     monitorear()
