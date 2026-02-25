@@ -783,7 +783,7 @@ def monitorear():
                                 if temp_cache:
                                     enviar_ofertas_sin_cortes(
                                         temp_cache,
-                                        encabezado=f"📊 <b>LISTADO DE CARGOS ({len(cache_snapshot)} resultados.):</b>",
+                                        encabezado=f"📊 <b>LISTADO DE CARGOS ({len(temp_cache)} resultados.):</b>",
                                         es_permanente=False,
                                         repetir_encabezado=False,
                                         pausa_segundos=1,
