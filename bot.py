@@ -152,23 +152,45 @@ def enviar_telegram(mensaje, silencioso=False):
 
 def obtener_top_postulantes(session, id_oferta):
     url_p = "https://servicios3.abc.gob.ar/valoracion.docente/api/apd.oferta.postulante/select"
-    params = {"q": f"idoferta:{id_oferta}", "sort": "puntaje desc", "rows": "3", "wt": "json"}
+    
+    # Pedimos 10 postulantes para tener margen de descartar a los inactivos
+    params = {"q": f"idoferta:{id_oferta}", "sort": "puntaje desc", "rows": "10", "wt": "json"}
+    
     try:
-        r = session.get(url_p, params=params, verify=not INSECURE_SSL, timeout=REQUEST_TIMEOUT)
+        r = session.get(url_p, params=params, verify=False)
         if r.status_code == 200:
             docs = r.json().get("response", {}).get("docs", [])
-            if not docs: return "<i>Sin postulantes aún</i>"
+            if not docs: return "_Sin postulantes aún_"
+            
             res = ""
-            for i, p in enumerate(docs, 1):
-                nombre = html.escape(f"{p.get('apellido', '')} {p.get('nombre', '')}".title().strip())
-                puntaje = html.escape(str(p.get('puntaje', '0.00')))
-                res += f"  {i}º {nombre} | <b>{puntaje} pts</b>\n"
+            activos_mostrados = 0
+            
+            for p in docs:
+                estado_post = str(p.get('estadopostulacion', '')).upper()
+                designado = str(p.get('designado', '')).upper()
+                
+                # FILTRO: Ignorar a los inactivos o ya designados
+                if estado_post != "ACTIVA" or designado == "S" or designado == "Y":
+                    continue # Salta a este postulante y pasa al siguiente
+                
+                nombre = f"{p.get('apellido','')} {p.get('nombre','')}".title()
+                activos_mostrados += 1
+                
+                res += f"  {activos_mostrados}º {nombre} | *{p.get('puntaje','0.00')} pts*\n"
+                
+                # Cortamos cuando ya juntamos a los 3 activos con más puntaje
+                if activos_mostrados >= 3:
+                    break 
+            
+            # Si revisó los 10 y todos estaban inactivos:
+            if activos_mostrados == 0:
+                return "_Postulantes inactivos (¡Vía libre!)_"
+                
             return res
-    except requests.RequestException:
-        return "<i>Error en ranking</i>"
-    except (ValueError, KeyError, TypeError):
-        return "<i>Error parseando ranking</i>"
-    return "<i>Sin datos</i>"
+    except: 
+        return "_Error en ranking_"
+        
+    return "_Sin datos_"
 
 def monitorear():
     print("[*] Monitoreo silencioso en tiempo real iniciado con Upstash...", flush=True)
