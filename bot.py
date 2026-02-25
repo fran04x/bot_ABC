@@ -28,6 +28,7 @@ MENSAJES_ENVIADOS = set()
 MENSAJE_POR_OFERTA = {}
 ULTIMA_CARGA_OK_TS = 0
 CACHE_LOCK = threading.Lock()
+FORZAR_REFRESH = threading.Event()
 CALLBACKS_PROCESADOS = {}
 INSTANCE_LOCK_KEY = os.environ.get("INSTANCE_LOCK_KEY", "abcbot_instance_lock")
 LISTENER_LOCK_KEY = os.environ.get("LISTENER_LOCK_KEY", f"{INSTANCE_LOCK_KEY}:listener")
@@ -39,10 +40,10 @@ CALLBACK_GET_RESULTADOS = f"get_resultados:{BOT_SESSION_ID}"
 # --- CANDADOS CORTOS PARA DEPLOYS RÁPIDOS ---
 try:
     LOCK_TTL_SEG = int(os.environ.get("INSTANCE_LOCK_TTL_SECONDS", "60"))
-    if LOCK_TTL_SEG < 30:
-        LOCK_TTL_SEG = 30
+    if LOCK_TTL_SEG < 60:
+        LOCK_TTL_SEG = 600
 except ValueError:
-    LOCK_TTL_SEG = 60
+    LOCK_TTL_SEG = 600
 
 try:
     TELEGRAM_MAX_MESSAGE_LEN = int(os.environ.get("TELEGRAM_MAX_MESSAGE_LEN", "4096"))
@@ -190,11 +191,15 @@ def renovar_lock_instancia(ttl_seg=LOCK_TTL_SEG, lock_key=INSTANCE_LOCK_KEY):
         return True
 
     owner_actual = upstash_cmd("get", lock_key)
-    if owner_actual != INSTANCE_OWNER:
+    
+    # Si owner_actual es None, puede ser un micro-corte de red de Upstash.
+    # Si no es None y es diferente a nosotros, perdimos el lock de verdad.
+    if owner_actual is not None and owner_actual != INSTANCE_OWNER:
         return False
 
-    result = upstash_cmd("set", lock_key, INSTANCE_OWNER, "EX", ttl_seg, "XX")
-    return str(result).upper() == "OK"
+    upstash_cmd("set", lock_key, INSTANCE_OWNER, "EX", ttl_seg, "XX")
+    # Asumimos que sigue vivo para no matarlo por un parpadeo del WiFi de Render
+    return True
 
 def liberar_lock_instancia(lock_key=INSTANCE_LOCK_KEY):
     base_url, _ = _upstash_headers()
@@ -458,31 +463,15 @@ def escuchar_botones():
                                         )
                                         continue
 
-                                    with CACHE_LOCK:
-                                        cache_snapshot = list(CACHE_RESULTADOS)
-
-                                    if not cache_snapshot:
-                                        requests.get(
-                                            url_answer,
-                                            params={
-                                                "callback_query_id": cb_id,
-                                                "text": "📭 No hay cargos activos en este momento.",
-                                                "show_alert": False
-                                            },
-                                            timeout=REQUEST_TIMEOUT
-                                        )
-                                        continue
-
-                                    requests.get(url_answer, params={"callback_query_id": cb_id}, timeout=REQUEST_TIMEOUT)
-
-                                    limpiar_chat()
-                                    enviar_ofertas_sin_cortes(
-                                        cache_snapshot,
-                                        encabezado="📊 <b>LISTADO ACTUAL DE CARGOS PUBLICADOS:</b>",
-                                        es_permanente=False,
-                                        repetir_encabezado=False,
-                                        pausa_segundos=1,
-                                        con_boton_al_final=True
+                                    FORZAR_REFRESH.set()
+                                    requests.get(
+                                        url_answer,
+                                        params={
+                                            "callback_query_id": cb_id,
+                                            "text": "🔄 Consultando datos frescos del ABC...",
+                                            "show_alert": False
+                                        },
+                                        timeout=REQUEST_TIMEOUT
                                     )
                                 elif isinstance(data, str) and data.startswith("get_resultados:"):
                                     requests.get(
@@ -508,7 +497,7 @@ def obtener_top_postulantes(session, id_oferta):
         r = session.get(url_p, params=params, verify=not INSECURE_SSL, timeout=REQUEST_TIMEOUT)
         if r.status_code == 200:
             docs = r.json().get("response", {}).get("docs", [])
-            if not docs: return "<i>Sin postulantes aún</i>"
+            if not docs: return "<i>Sin postulantes aún</i>\n"
             res = ""
             activos_mostrados = 0
             for p in docs:
@@ -534,7 +523,7 @@ def obtener_top_postulantes(session, id_oferta):
                 activos_mostrados += 1
                 if activos_mostrados >= 3: break
                 
-            if activos_mostrados == 0: return "<i>Postulantes inactivos (¡Vía libre!)</i>"
+            if activos_mostrados == 0: return "<i>Postulantes inactivos (¡Vía libre!)</i>\n"
             return res
     except Exception:
         return "<i>Error en ranking</i>"
@@ -582,24 +571,47 @@ def monitorear():
     
     while True: # Bucle de supervivencia
         if not adquirir_lock_instancia(LOCK_TTL_SEG, MONITOR_LOCK_KEY):
-            print("[!] Monitor pasivo: otra instancia está activa. Esperando liberacion del lock...", flush=True)
+            print("[!] Monitor pasivo: otra instancia está activa. Esperando pacientemente...", flush=True)
             time.sleep(15)
             continue
 
         print("[*] Monitor ACTIVO: Lock adquirido. Iniciando...", flush=True)
 
         msg_arranque = (
-            "✅ <b>INICIADO CORRECTAMENTE</b>\n\n"
-            "El sistema está activo y escaneando el ABC con estos filtros:\n"
+            "✅ <b>SISTEMA INICIADO</b>\n\n"
+            "El bot está activo y escaneando el ABC con estos filtros:\n"
             "📍 <b>Distrito:</b> General Pueyrredón\n"
-            "📚 <b>Cargo:</b> Maestro de Grado (MG)\n"
+            "📚 <b>Cargo:</b> Maestro de Grado\n"
             "⏱ <b>Jornada:</b> Simple y Completa\n"
             "📌 <b>Estado:</b> Ofertas 'Publicadas'\n\n"
-            "🌐 <a href='https://misservicios.abc.gob.ar/actos.publicos.digitales/'>Ingresar al portal.</a>\n"
+            "🌐 <a href='https://misservicios.abc.gob.ar/actos.publicos.digitales/'>Simular búsqueda visual en el portal</a>\n"
             "<i>(Ingresá manualmente: Gral. Pueyrredón + Maestro de Grado)</i>\n\n"
             "👇 Podés pedir el listado actual tocando el botón de abajo."
         )
-        enviar_telegram(msg_arranque, con_boton=True, es_permanente=True)
+        
+        # --- NUEVA LÓGICA: BORRAR EL SALUDO ANTERIOR ---
+        base_url, headers = _upstash_headers()
+        if base_url:
+            try:
+                # Buscamos si había un mensaje de arranque viejo
+                resp = requests.get(f"{base_url}/get/msg_arranque_id", headers=headers, timeout=5)
+                if resp.status_code == 200 and resp.json().get("result"):
+                    viejo_id = resp.json().get("result")
+                    # Lo borramos de Telegram
+                    requests.post(f"https://api.telegram.org/bot{TOKEN}/deleteMessage", json={"chat_id": CHAT_ID, "message_id": int(viejo_id)}, timeout=5)
+            except Exception:
+                pass
+
+        # Enviamos el nuevo saludo inmortal
+        sent_ids = enviar_telegram(msg_arranque, con_boton=True, es_permanente=True)
+        
+        # Guardamos el ID de este nuevo saludo en Upstash para borrarlo en el próximo reinicio
+        if base_url and sent_ids:
+            try:
+                requests.get(f"{base_url}/set/msg_arranque_id/{sent_ids[0]}", headers=headers, timeout=5)
+            except Exception:
+                pass
+        # -----------------------------------------------
 
         ofertas_estados_local = {}
         HORAS_REPORTE = {6, 8, 11, 15, 17, 20}
@@ -615,6 +627,8 @@ def monitorear():
                 buffer_nuevas = []
                 buffer_cerradas = []
                 temp_cache = []
+                fue_refresh_forzado = FORZAR_REFRESH.is_set()
+                FORZAR_REFRESH.clear()
 
                 try:
                     with requests.Session() as session:
@@ -726,6 +740,20 @@ def monitorear():
                                 CACHE_RESULTADOS = temp_cache
                             ULTIMA_CARGA_OK_TS = time.time()
 
+                            if fue_refresh_forzado:
+                                limpiar_chat()
+                                if temp_cache:
+                                    enviar_ofertas_sin_cortes(
+                                        temp_cache,
+                                        encabezado="📊 <b>LISTADO ACTUAL DE CARGOS PUBLICADOS:</b>",
+                                        es_permanente=False,
+                                        repetir_encabezado=False,
+                                        pausa_segundos=1,
+                                        con_boton_al_final=True
+                                    )
+                                else:
+                                    enviar_telegram("📭 No hay cargos activos en este momento.", es_permanente=False, con_boton=True)
+
                             ahora = datetime.now(tz_ar)
                             hora_actual = ahora.hour
                             hora_str = ahora.strftime("%H:%M")
@@ -764,17 +792,21 @@ def monitorear():
                 except Exception as e:
                     print(f"[-] Error: {e}", flush=True)
 
-                # --- EL NUEVO SUEÑO LIGERO DE 15 MINUTOS ---
+                # --- EL NUEVO SUEÑO LIGERO OPTIMIZADO ---
                 lock_perdido = False
-                for _ in range(60): # 60 vueltas de 15 seg = 900 segundos = 15 mins
+                for i in range(60): # 60 vueltas de 15 seg = 900 segundos = 15 mins
                     time.sleep(15)
-                    if not renovar_lock_instancia(LOCK_TTL_SEG, MONITOR_LOCK_KEY):
-                        lock_perdido = True
-                        break
+                    
+                    # Renovamos el candado cada 4 vueltas (1 minuto exacto) 
+                    # para proteger la cuota gratuita de Upstash
+                    if i % 4 == 0:
+                        if not renovar_lock_instancia(LOCK_TTL_SEG, MONITOR_LOCK_KEY):
+                            lock_perdido = True
+                            break
                         
                 if lock_perdido:
-                    print("[!] Lock caducó mientras dormía. Saliendo de guardia...", flush=True)
-                    break 
+                    print("[!] Lock caducó mientras dormía o fue robado. Saliendo de guardia...", flush=True)
+                    break
 
         finally:
             liberar_lock_instancia(MONITOR_LOCK_KEY)
