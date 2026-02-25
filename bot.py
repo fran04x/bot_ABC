@@ -89,6 +89,7 @@ def enviar_telegram(mensaje, silencioso=False, con_boton=False, es_permanente=Fa
             response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
             response.raise_for_status()
             data = response.json()
+            # Si NO es permanente, lo anotamos para poder borrarlo en la próxima actualización
             if data.get("ok") and not es_permanente:
                 MENSAJES_ENVIADOS.add(data["result"]["message_id"])
             return
@@ -140,9 +141,9 @@ def escuchar_botones():
     offset = 0
     url_updates = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
     url_answer = f"https://api.telegram.org/bot{TOKEN}/answerCallbackQuery"
+    ultimo_clic = 0
     
-    # --- PURGA DE CLICS FANTASMAS ---
-    # Leemos la cola de Telegram una vez y la descartamos sin hacer nada
+    # PURGA INICIAL: Borra clics viejos de Telegram que hayan quedado colgados mientras el bot reiniciaba
     try:
         r = requests.get(url_updates, params={"offset": offset, "timeout": 5}, timeout=10)
         if r.status_code == 200:
@@ -165,11 +166,19 @@ def escuchar_botones():
                         data = cb.get("data")
                         
                         if data == "get_resultados":
+                            ahora = time.time()
+                            # ESCUDO ANTI-SPAM: Ignora clics que ocurran con menos de 3 segundos de diferencia
+                            if ahora - ultimo_clic < 3:
+                                requests.get(url_answer, params={"callback_query_id": cb_id, "text": "⏳ Cargando...", "show_alert": False})
+                                continue
+                            
+                            ultimo_clic = ahora
                             requests.get(url_answer, params={"callback_query_id": cb_id})
+                            
                             limpiar_chat()
                             
                             if not CACHE_RESULTADOS:
-                                enviar_telegram("⏳ <i>El bot recién inició y está escaneando el ABC. Intentá de nuevo en 1 minuto.</i>", silencioso=True, con_boton=True, es_permanente=False)
+                                enviar_telegram("⏳ <i>El bot recién inició o no hay cargos activos. Intentá de nuevo en unos minutos.</i>", silencioso=True, es_permanente=False)
                             else:
                                 enviar_telegram("📊 <b>LISTADO ACTUAL DE CARGOS PUBLICADOS:</b>", es_permanente=False)
                                 bloque = ""
@@ -199,15 +208,25 @@ def obtener_top_postulantes(session, id_oferta):
                 if estado_post != "ACTIVA" or designado in ["S", "Y"]:
                     continue
                 
-                # CORRECCIÓN DE NOMBRES
-                apellido = p.get('apellido', '').strip()
-                nombres = p.get('nombres', p.get('nombre', '')).strip()
-                nombre_completo = html.escape(f"{apellido} {nombres}".strip().title())
-                if not nombre_completo: nombre_completo = "Docente"
+                # --- CORRECCIÓN SÚPER ROBUSTA DE NOMBRES ---
+                apellido = str(p.get('apellido', '')).strip()
+                nombres = str(p.get('nombres', p.get('nombre', ''))).strip()
+                nombre_crudo = f"{apellido} {nombres}".strip()
                 
-                res += f"  {activos_mostrados + 1}º {nombre_completo} | <b>{html.escape(str(p.get('puntaje', '0.00')))} pts</b>\n"
+                if not nombre_crudo:
+                    nombre_crudo = str(p.get('apellidoynombre', '')).strip()
+                    
+                if not nombre_crudo:
+                    nombre_crudo = "Docente"
+                # --------------------------------------------
+                    
+                nombre_completo = html.escape(nombre_crudo.title())
+                puntaje = html.escape(str(p.get('puntaje', '0.00')))
+                
+                res += f"  {activos_mostrados + 1}º {nombre_completo} | <b>{puntaje} pts</b>\n"
                 activos_mostrados += 1
                 if activos_mostrados >= 3: break
+                
             if activos_mostrados == 0: return "<i>Postulantes inactivos (¡Vía libre!)</i>"
             return res
     except:
@@ -229,6 +248,7 @@ def monitorear():
         "<i>(Ingresá manualmente: Gral. Pueyrredón + Maestro de Grado)</i>\n\n"
         "👇 Podés pedir el listado actual tocando el botón de abajo."
     )
+    # ESCUDO ACTIVADO: Este mensaje nunca se borra
     enviar_telegram(msg_arranque, con_boton=True, es_permanente=True)
     
     ofertas_estados_local = {} 
@@ -340,7 +360,7 @@ def monitorear():
                         for idx, txt in enumerate(buffer_nuevas, 1):
                             bloque += txt
                             if idx % 10 == 0 or idx == len(buffer_nuevas):
-                                enviar_telegram(f"🚨 <b>NUEVOS CARGOS ({hora_str} hs)</b> 🚨\n\n{bloque}")
+                                enviar_telegram(f"🚨 <b>NUEVOS CARGOS ({hora_str} hs)</b> 🚨\n\n{bloque}", es_permanente=False)
                                 bloque = ""
                                 time.sleep(2)
                                 
@@ -349,14 +369,14 @@ def monitorear():
                         for idx, txt in enumerate(buffer_cerradas, 1):
                             bloque += txt
                             if idx % 15 == 0 or idx == len(buffer_cerradas):
-                                enviar_telegram(f"❌ <b>CARGOS DESIGNADOS (Cerrados)</b> ❌\n\n{bloque}", silencioso=True)
+                                enviar_telegram(f"❌ <b>CARGOS DESIGNADOS (Cerrados)</b> ❌\n\n{bloque}", silencioso=True, es_permanente=False)
                                 bloque = ""
                                 time.sleep(2)
                     
                     if (buffer_nuevas or buffer_cerradas) and hora_actual in HORAS_REPORTE:
                         ultimo_reporte_enviado = hora_actual
                     elif not buffer_nuevas and not buffer_cerradas and hora_actual in HORAS_REPORTE and ultimo_reporte_enviado != hora_actual:
-                        enviar_telegram(f"⏳ <i>{hora_str} hs - Bot activo: Monitoreando sin novedades por el momento.</i>", silencioso=True)
+                        enviar_telegram(f"⏳ <i>{hora_str} hs - Bot activo: Monitoreando sin novedades por el momento.</i>", silencioso=True, es_permanente=False)
                         ultimo_reporte_enviado = hora_actual
 
                 else:
