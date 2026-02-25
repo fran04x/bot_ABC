@@ -267,7 +267,8 @@ def guardar_mensaje_oferta(id_oferta, message_id):
     if not base_url:
         return
     try:
-        requests.get(f"{base_url}/set/oferta_msg_{id_oferta}/{int(message_id)}", headers=headers, timeout=5)
+        # Se agrega /EX/604800 para que la memoria visual también caduque a los 7 días
+        requests.get(f"{base_url}/set/oferta_msg_{id_oferta}/{int(message_id)}/EX/604800", headers=headers, timeout=5)
     except Exception:
         pass
 
@@ -620,7 +621,7 @@ def monitorear():
             "✅ <b>INICIADO CORRECTAMENTE</b>\n\n"
             "El sistema está activo y escaneando el ABC con estos filtros:\n"
             "📍 <b>Distrito:</b> General Pueyrredón\n"
-            "📚 <b>Cargo:</b> Maestro de Grado\n"
+            "📚 <b>Cargo:</b> Maestro de Grado (/MG)\n"
             "⏱ <b>Jornada:</b> Simple y Completa\n"
             "📌 <b>Estado:</b> Ofertas 'Publicadas'\n\n"
             "🌐 <a href='https://misservicios.abc.gob.ar/actos.publicos.digitales/'>Ingresar a la página principal del portal</a>\n"
@@ -745,7 +746,8 @@ def monitorear():
                                 if not estado_previo or (estado_previo != estado_actual):
                                     if UPSTASH_URL and UPSTASH_TOKEN:
                                         try:
-                                            requests.get(f"{base_url}/set/oferta_{id_o}/{estado_actual}", headers=headers, timeout=5)
+                                            # Se añade /EX/604800 para que el dato se autodestruya en 7 días exactos
+                                            requests.get(f"{base_url}/set/oferta_{id_o}/{estado_actual}/EX/604800", headers=headers, timeout=5)
                                         except Exception:
                                             ofertas_estados_local[id_o] = estado_actual
                                     else:
@@ -787,7 +789,7 @@ def monitorear():
 
                                 elif cambio_a_designada:
                                     txt = f"🏫 <b>Escuela:</b> {escuela}\n"
-                                    txt += f"📚 <b>Área:</b> <code>{cargo}</code>\n"
+                                    txt += f"📚 <b>Área:</b> {cargo}\n"
                                     txt += f"🕒 <b>Inicio Oferta:</b> {inicio_oferta}\n"
                                     if curso != "-" or division != "-":
                                         txt += f"👥 <b>Curso/Div:</b> {curso} - {division}\n"
