@@ -236,7 +236,9 @@ def callback_ya_procesado(callback_id, ttl_seg=300, max_items=2000):
     if base_url:
         clave = f"cb_seen_{callback_id}"
         result = upstash_cmd("set", clave, INSTANCE_OWNER, "EX", ttl_seg, "NX")
-        if str(result).upper() != "OK":
+        # CORRECCIÓN: Solo bloqueamos si estamos seguros de que otro bot lo procesó.
+        # Si result es None (falla de red), lo dejamos pasar al fallback local.
+        if result is not None and str(result).upper() != "OK":
             return True
 
     ahora = time.time()
@@ -472,28 +474,30 @@ def escuchar_botones():
                                         continue
                                     
                                     ultimo_clic = ahora
+                                    
+                                    # CORRECCIÓN: SIEMPRE despertamos al bot, incluso si el ABC falló al arrancar
+                                    FORZAR_REFRESH.set()
+                                    
                                     if ULTIMA_CARGA_OK_TS == 0:
                                         requests.get(
                                             url_answer,
                                             params={
                                                 "callback_query_id": cb_id,
-                                                "text": "⏳ El bot todavía está cargando datos. Intentá de nuevo en unos segundos.",
+                                                "text": "🔄 Intentando reconectar con el ABC...",
                                                 "show_alert": False
                                             },
                                             timeout=REQUEST_TIMEOUT
                                         )
-                                        continue
-
-                                    FORZAR_REFRESH.set()
-                                    requests.get(
-                                        url_answer,
-                                        params={
-                                            "callback_query_id": cb_id,
-                                            "text": "🔄 Consultando datos actualizados...",
-                                            "show_alert": False
-                                        },
-                                        timeout=REQUEST_TIMEOUT
-                                    )
+                                    else:
+                                        requests.get(
+                                            url_answer,
+                                            params={
+                                                "callback_query_id": cb_id,
+                                                "text": "🔄 Consultando datos actualizados...",
+                                                "show_alert": False
+                                            },
+                                            timeout=REQUEST_TIMEOUT
+                                        )
                                 elif isinstance(data, str) and data.startswith("get_resultados:"):
                                     requests.get(
                                         url_answer,
