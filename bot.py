@@ -25,7 +25,7 @@ UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
 
 # --- MEMORIA GLOBAL ---
 CACHE_RESULTADOS = []
-MENSAJES_ENVIADOS = set() # Aquí el bot anotará qué mensajes mandó para poder borrarlos luego
+MENSAJES_ENVIADOS = set()
 
 try:
     TELEGRAM_MAX_MESSAGE_LEN = int(os.environ.get("TELEGRAM_MAX_MESSAGE_LEN", "4096"))
@@ -66,7 +66,7 @@ class TLSAdapter(HTTPAdapter):
             kwargs['ssl_context'] = context
         return super(TLSAdapter, self).init_poolmanager(*args, **kwargs)
 
-def enviar_telegram(mensaje, silencioso=False, con_boton=False):
+def enviar_telegram(mensaje, silencioso=False, con_boton=False, es_permanente=False):
     global MENSAJES_ENVIADOS
     if not TOKEN or not CHAT_ID:
         return
@@ -89,8 +89,9 @@ def enviar_telegram(mensaje, silencioso=False, con_boton=False):
             response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
             response.raise_for_status()
             data = response.json()
-            if data.get("ok"):
-                MENSAJES_ENVIADOS.add(data["result"]["message_id"]) # Anotamos el ID del mensaje
+            # Si NO es permanente, guardamos su ID para poder borrarlo después
+            if data.get("ok") and not es_permanente:
+                MENSAJES_ENVIADOS.add(data["result"]["message_id"])
             return
         except requests.RequestException as error:
             status = getattr(getattr(error, "response", None), "status_code", None)
@@ -99,7 +100,7 @@ def enviar_telegram(mensaje, silencioso=False, con_boton=False):
                     resp_plain = requests.post(url, json=payload_plain, timeout=REQUEST_TIMEOUT)
                     resp_plain.raise_for_status()
                     data = resp_plain.json()
-                    if data.get("ok"):
+                    if data.get("ok") and not es_permanente:
                         MENSAJES_ENVIADOS.add(data["result"]["message_id"])
                     return
                 except:
@@ -126,7 +127,6 @@ def enviar_telegram(mensaje, silencioso=False, con_boton=False):
         enviar_parte(parte)
 
 def limpiar_chat():
-    """Borra todos los mensajes que el bot tiene registrados en su memoria local."""
     global MENSAJES_ENVIADOS
     url_delete = f"https://api.telegram.org/bot{TOKEN}/deleteMessage"
     for msg_id in list(MENSAJES_ENVIADOS):
@@ -157,21 +157,19 @@ def escuchar_botones():
                         if data == "get_resultados":
                             requests.get(url_answer, params={"callback_query_id": cb_id})
                             
-                            # 1. Limpiamos la pantalla
                             limpiar_chat()
                             
-                            # 2. Mostramos los nuevos resultados
                             if not CACHE_RESULTADOS:
-                                enviar_telegram("⏳ <i>El bot recién inició y está escaneando el ABC. Intentá de nuevo en 1 minuto.</i>", silencioso=True, con_boton=True)
+                                # Este mensaje de aviso temporal sí se borra en la siguiente limpieza
+                                enviar_telegram("⏳ <i>El bot recién inició y está escaneando el ABC. Intentá de nuevo en 1 minuto.</i>", silencioso=True, con_boton=True, es_permanente=False)
                             else:
-                                enviar_telegram("📊 <b>LISTADO ACTUAL DE CARGOS PUBLICADOS:</b>")
+                                enviar_telegram("📊 <b>LISTADO ACTUAL DE CARGOS PUBLICADOS:</b>", es_permanente=False)
                                 bloque = ""
                                 for idx, txt in enumerate(CACHE_RESULTADOS, 1):
                                     bloque += txt
                                     if idx % 10 == 0 or idx == len(CACHE_RESULTADOS):
-                                        # Agregamos el botón solo al final del último bloque
                                         poner_boton = (idx == len(CACHE_RESULTADOS))
-                                        enviar_telegram(bloque, con_boton=poner_boton)
+                                        enviar_telegram(bloque, con_boton=poner_boton, es_permanente=False)
                                         bloque = ""
                                         time.sleep(1) 
         except Exception as e:
@@ -206,7 +204,6 @@ def monitorear():
     global CACHE_RESULTADOS
     print("[*] Monitoreo inteligente iniciado...", flush=True)
     
-    # MENSAJE DE ARRANQUE LIMPIO Y DIRECTO
     msg_arranque = (
         "✅ <b>SISTEMA INICIADO</b>\n\n"
         "El bot está activo y escaneando el ABC con estos filtros:\n"
@@ -214,14 +211,15 @@ def monitorear():
         "📚 <b>Cargo:</b> Maestro de Grado\n"
         "⏱ <b>Jornada:</b> Simple y Completa\n"
         "📌 <b>Estado:</b> Ofertas 'Publicadas'\n\n"
-        "🌐 <a href='https://misservicios.abc.gob.ar/actos.publicos.digitales/'>Simular búsqueda visual en el portal</a>\n"
+        "🌐 <a href='https://misservicios.abc.gob.ar/actos.publicos.digitales/'>Acceder al portal</a>\n"
         "<i>(Ingresá manualmente: Gral. Pueyrredón + Maestro de Grado)</i>\n\n"
         "👇 Podés pedir el listado actual tocando el botón de abajo."
     )
-    enviar_telegram(msg_arranque, con_boton=True)
+    # APLICAMOS EL ESCUDO: es_permanente=True
+    enviar_telegram(msg_arranque, con_boton=True, es_permanente=True)
     
     ofertas_estados_local = {} 
-    HORAS_REPORTE = {8, 11, 14, 17, 20}
+    HORAS_REPORTE = {6, 9, 14, 17, 20, 21}
     ultimo_reporte_enviado = None
     tz_ar = timezone(timedelta(hours=-3))
     
