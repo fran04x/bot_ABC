@@ -489,7 +489,7 @@ def escuchar_botones():
                                         url_answer,
                                         params={
                                             "callback_query_id": cb_id,
-                                            "text": "🔄 Consultando datos frescos del ABC...",
+                                            "text": "🔄 Consultando datos actualizados...",
                                             "show_alert": False
                                         },
                                         timeout=REQUEST_TIMEOUT
@@ -730,7 +730,11 @@ def monitorear():
 
                                 if estado_actual == "PUBLICADA":
                                     ranking = obtener_top_postulantes(session, id_o)
-                                    link = f"https://misservicios.abc.gob.ar/actos.publicos.digitales/postulantes/?oferta={id_o}&detalle={info.get('iddetalle', id_o)}&_t={ts}"
+                                    id_detalle = info.get('iddetalle', id_o)
+                                    
+                                    # Generación de ambos links
+                                    link = f"https://misservicios.abc.gob.ar/actos.publicos.digitales/postulantes/?oferta={id_o}&detalle={id_detalle}&_t={ts}"
+                                    link_postularse = f"https://misaplicaciones5.abc.gob.ar/postulacionAPD/addPostulacion/{id_detalle}?_={ts}"
 
                                     txt = f"🏫 <b>Escuela:</b> {escuela}\n"
                                     txt += f"📚 <b>Área:</b> <code>{cargo}</code>\n"
@@ -739,7 +743,9 @@ def monitorear():
                                         txt += f"👥 <b>Curso/Div:</b> {curso} - {division}\n"
                                     txt += f"⏱ <b>Jornada:</b> {jornada_texto}\n"
                                     txt += f"🏆 <b>Puntajes:</b>\n{ranking}"
-                                    txt += f"🔗 <a href=\"{html.escape(link, quote=True)}\">VER ESCUELA</a>\n"
+                                    
+                                    # Agregamos el botón de POSTULARSE al lado de VER ESCUELA
+                                    txt += f"🔗 <a href=\"{html.escape(link, quote=True)}\">VER ESCUELA</a> | 📝 <a href=\"{html.escape(link_postularse, quote=True)}\">POSTULARSE</a>\n"
                                     txt += "───────────────────\n"
 
                                     temp_cache.append(txt)
@@ -815,11 +821,15 @@ def monitorear():
 
                 # --- EL NUEVO SUEÑO LIGERO OPTIMIZADO ---
                 lock_perdido = False
-                for i in range(60): # 60 vueltas de 15 seg = 900 segundos = 15 mins
-                    time.sleep(15)
+                for i in range(60): # 60 vueltas de 15 seg = 15 mins
+                    # wait(15) duerme 15 seg, PERO si tocás el botón despierta al instante y devuelve True
+                    desperto_por_boton = FORZAR_REFRESH.wait(timeout=15.0) 
+                    
+                    if desperto_por_boton:
+                        print("[*] Botón presionado. Interrumpiendo sueño para buscar datos frescos...", flush=True)
+                        break # Rompe el ciclo de 15 mins y arranca la búsqueda de inmediato
                     
                     # Renovamos el candado cada 4 vueltas (1 minuto exacto) 
-                    # para proteger la cuota gratuita de Upstash
                     if i % 4 == 0:
                         if not renovar_lock_instancia(LOCK_TTL_SEG, MONITOR_LOCK_KEY):
                             lock_perdido = True
