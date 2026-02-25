@@ -560,28 +560,23 @@ def formatear_fecha_argentina(valor, tz_obj):
         valor = valor[0]
 
     try:
-        if isinstance(valor, (int, float)):
+        texto = str(valor).strip()
+        if not texto:
+            return "N/A"
+
+        # Si el sistema llega a mandar un timestamp numérico puro
+        if texto.isdigit() or isinstance(valor, (int, float)):
             ts = float(valor)
             if ts > 1e12:
                 ts /= 1000.0
             dt = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(tz_obj)
             return dt.strftime("%d/%m/%Y %H:%M")
 
-        texto = str(valor).strip()
-        if not texto:
-            return "N/A"
-
-        if texto.isdigit():
-            ts = float(texto)
-            if ts > 1e12:
-                ts /= 1000.0
-            dt = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(tz_obj)
-            return dt.strftime("%d/%m/%Y %H:%M")
-
-        dt = datetime.fromisoformat(texto.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        dt = dt.astimezone(tz_obj)
+        # Si manda el string ISO clásico ("2026-02-25T11:41:00Z")
+        # Le arrancamos la "Z" o cualquier zona horaria y leemos la hora cruda
+        texto_limpio = texto.replace("Z", "").split("+")[0]
+        dt = datetime.fromisoformat(texto_limpio)
+        
         return dt.strftime("%d/%m/%Y %H:%M")
     except Exception:
         return "N/A"
@@ -741,7 +736,7 @@ def monitorear():
 
                                 jornada_raw = str(info.get('jornada', '')).upper()
                                 if "JC" in jornada_raw:
-                                    jornada_texto = "Completa"
+                                    jornada_texto = "🔴 COMPLETA 🔴"
                                 elif "JS" in jornada_raw:
                                     jornada_texto = "Simple"
                                 else:
@@ -788,7 +783,7 @@ def monitorear():
                                 if temp_cache:
                                     enviar_ofertas_sin_cortes(
                                         temp_cache,
-                                        encabezado="📊 <b>LISTADO ACTUAL DE CARGOS PUBLICADOS:</b>",
+                                        encabezado=f"📊 <b>LISTADO DE CARGOS ({len(cache_snapshot)} resultados.):</b>",
                                         es_permanente=False,
                                         repetir_encabezado=False,
                                         pausa_segundos=1,
