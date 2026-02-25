@@ -23,6 +23,9 @@ REQUEST_TIMEOUT = (10, 30)
 UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
 UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
 
+# --- CACHÉ GLOBAL PARA EL BOTÓN ---
+CACHE_RESULTADOS = []
+
 try:
     TELEGRAM_MAX_MESSAGE_LEN = int(os.environ.get("TELEGRAM_MAX_MESSAGE_LEN", "4096"))
     if TELEGRAM_MAX_MESSAGE_LEN < 1:
@@ -38,7 +41,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot con Memoria de Estados (JS/JC) Activo")
+        self.wfile.write(b"Bot Interactivo Activo")
         
     def do_HEAD(self):
         self.send_response(200)
@@ -62,13 +65,21 @@ class TLSAdapter(HTTPAdapter):
             kwargs['ssl_context'] = context
         return super(TLSAdapter, self).init_poolmanager(*args, **kwargs)
 
-def enviar_telegram(mensaje, silencioso=False):
+def enviar_telegram(mensaje, silencioso=False, con_boton=False):
     if not TOKEN or not CHAT_ID:
         return
 
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    
     def enviar_parte(texto):
         payload = {"chat_id": CHAT_ID, "text": texto, "parse_mode": "HTML", "disable_web_page_preview": True, "disable_notification": silencioso}
+        
+        # Agregamos el botón si se solicita
+        if con_boton:
+            payload["reply_markup"] = {
+                "inline_keyboard": [[{"text": "🔄 Obtener Resultados Actuales", "callback_data": "get_resultados"}]]
+            }
+            
         payload_plain = {"chat_id": CHAT_ID, "text": texto, "disable_web_page_preview": True, "disable_notification": silencioso}
 
         try:
@@ -104,6 +115,43 @@ def enviar_telegram(mensaje, silencioso=False):
     for idx, parte in enumerate(partes, start=1):
         enviar_parte(parte)
 
+# --- HILO PARA ESCUCHAR EL BOTÓN ---
+def escuchar_botones():
+    global CACHE_RESULTADOS
+    offset = 0
+    url_updates = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
+    url_answer = f"https://api.telegram.org/bot{TOKEN}/answerCallbackQuery"
+    
+    while True:
+        try:
+            r = requests.get(url_updates, params={"offset": offset, "timeout": 30}, timeout=40)
+            if r.status_code == 200:
+                updates = r.json().get("result", [])
+                for up in updates:
+                    offset = up["update_id"] + 1
+                    if "callback_query" in up:
+                        cb = up["callback_query"]
+                        cb_id = cb["id"]
+                        data = cb.get("data")
+                        
+                        if data == "get_resultados":
+                            # Le respondemos a Telegram para que el botón no quede "cargando"
+                            requests.get(url_answer, params={"callback_query_id": cb_id})
+                            
+                            if not CACHE_RESULTADOS:
+                                enviar_telegram("⏳ <i>El bot recién inició y está escaneando el ABC. Intentá de nuevo en 1 minuto.</i>", silencioso=True)
+                            else:
+                                enviar_telegram("📊 <b>LISTADO ACTUAL DE CARGOS PUBLICADOS:</b>")
+                                bloque = ""
+                                for idx, txt in enumerate(CACHE_RESULTADOS, 1):
+                                    bloque += txt
+                                    if idx % 10 == 0 or idx == len(CACHE_RESULTADOS):
+                                        enviar_telegram(bloque)
+                                        bloque = ""
+                                        time.sleep(1) # Pausa técnica para no saturar Telegram
+        except Exception as e:
+            time.sleep(5)
+
 def obtener_top_postulantes(session, id_oferta):
     url_p = "https://servicios3.abc.gob.ar/valoracion.docente/api/apd.oferta.postulante/select"
     params = {"q": f"idoferta:{id_oferta}", "sort": "puntaje desc", "rows": "10", "wt": "json"}
@@ -130,9 +178,13 @@ def obtener_top_postulantes(session, id_oferta):
     return "<i>Sin datos</i>"
 
 def monitorear():
-    print("[*] Monitoreo inteligente (JS/JC) iniciado...", flush=True)
-    ofertas_estados_local = {} 
+    global CACHE_RESULTADOS
+    print("[*] Monitoreo inteligente iniciado...", flush=True)
     
+    # MENSAJE DE ARRANQUE CON BOTÓN
+    enviar_telegram("✅ <b>SISTEMA INICIADO</b>\n\nEl bot está activo y conectado al ABC. Podés pedir el listado actual tocando el botón de abajo.", con_boton=True)
+    
+    ofertas_estados_local = {} 
     HORAS_REPORTE = {6, 9, 14, 17, 20, 21}
     ultimo_reporte_enviado = None
     tz_ar = timezone(timedelta(hours=-3))
@@ -140,6 +192,7 @@ def monitorear():
     while True:
         buffer_nuevas = []
         buffer_cerradas = []
+        temp_cache = [] # Bolsa temporal para guardar la foto del momento
         
         try:
             with requests.Session() as session:
@@ -150,24 +203,20 @@ def monitorear():
                 payload = {'option': 'credential', 'target': 'https://menu.abc.gob.ar/', 'Ecom_User_ID': CUIL, 'Ecom_Password': PASSWORD}
                 session.post(login_url, data=payload, verify=not INSECURE_SSL, timeout=REQUEST_TIMEOUT)
 
-                # Pedimos todo (Publicadas y Designadas)
                 url_solr = "https://servicios3.abc.gob.ar/valoracion.docente/api/apd.oferta.encabezado/select"
                 params = {"q": 'descdistrito:"GENERAL PUEYRREDON" AND (estado:"Publicada" OR estado:"Designada")', "rows": "1000", "wt": "json"}
                 r = session.get(url_solr, params=params, verify=not INSECURE_SSL, timeout=REQUEST_TIMEOUT)
             
                 if r.status_code == 200:
                     docs = r.json().get("response", {}).get("docs", [])
-                    # Al buscar "MAESTRO DE GRADO" sin filtrar por JC, atrapamos Jornada Simple y Completa
                     hallazgos = [o for o in docs if "MAESTRO DE GRADO" in str(o.get("cargo","")).upper()]
                     ts = int(time.time() * 1000)
 
                     for info in hallazgos:
                         id_o = str(info.get('idoferta'))
                         estado_actual = str(info.get('estado', '')).upper()
-                        
                         estado_previo = None
 
-                        # 1. LEER MEMORIA (Upstash o Local)
                         if UPSTASH_URL and UPSTASH_TOKEN:
                             base_url = UPSTASH_URL.rstrip('/')
                             headers = {"Authorization": f"Bearer {UPSTASH_TOKEN}"}
@@ -175,27 +224,21 @@ def monitorear():
                                 resp = requests.get(f"{base_url}/get/oferta_{id_o}", headers=headers, timeout=5)
                                 if resp.status_code == 200:
                                     estado_previo = resp.json().get("result")
-                            except Exception as e:
-                                print(f"[-] Fallo Redis GET, usando RAM local: {e}")
+                            except:
                                 estado_previo = ofertas_estados_local.get(id_o)
                         else:
                             estado_previo = ofertas_estados_local.get(id_o)
 
-                        # 2. MÁQUINA DE ESTADOS Y FILTROS
                         es_nueva_y_publicada = False
                         cambio_a_designada = False
 
                         if not estado_previo:
-                            # Primera vez que vemos esta oferta
                             if estado_actual == "PUBLICADA":
                                 es_nueva_y_publicada = True
-                            # Si es "DESIGNADA" la primera vez, NO hacemos nada (ignora históricas)
                         else:
-                            # Ya la conocíamos
                             if estado_previo == "PUBLICADA" and estado_actual == "DESIGNADA":
                                 cambio_a_designada = True
 
-                        # 3. ACTUALIZAR MEMORIA (Solo si no existía o si cambió de estado)
                         if not estado_previo or (estado_previo != estado_actual):
                             if UPSTASH_URL and UPSTASH_TOKEN:
                                 try:
@@ -205,22 +248,28 @@ def monitorear():
                             else:
                                 ofertas_estados_local[id_o] = estado_actual
 
-                        # 4. PREPARAR MENSAJES
+                        # Formateo visual
                         escuela = html.escape(str(info.get('escuela', 'N/A')))
                         cargo = html.escape(str(info.get('cargo', 'N/A')))
-                        jornada = html.escape(str(info.get('jornada', 'N/A')).upper()) # Sacamos la jornada (JS/JC)
+                        jornada = html.escape(str(info.get('jornada', 'N/A')).upper())
                         
-                        if es_nueva_y_publicada:
+                        # Armado de texto para alertas y caché
+                        if estado_actual == "PUBLICADA":
                             ranking = obtener_top_postulantes(session, id_o)
                             link = f"https://misservicios.abc.gob.ar/actos.publicos.digitales/postulantes/?oferta={id_o}&detalle={info.get('iddetalle', id_o)}&_t={ts}"
                             
                             txt = f"🏫 <b>Escuela:</b> {escuela}\n"
                             txt += f"📚 <b>Área:</b> <code>{cargo}</code>\n"
                             txt += f"⏱ <b>Jornada:</b> {jornada}\n"
-                            txt += f"🏆 <b>Puntajes:</b>\n{ranking}"
+                            txt += f"🏆 <b>Top 3:</b>\n{ranking}"
                             txt += f"🔗 <a href=\"{html.escape(link, quote=True)}\">VER ESCUELA</a>\n"
                             txt += "───────────────────\n"
-                            buffer_nuevas.append(txt)
+                            
+                            # Lo guardamos siempre en la foto temporal para el botón
+                            temp_cache.append(txt)
+                            
+                            if es_nueva_y_publicada:
+                                buffer_nuevas.append(txt)
 
                         elif cambio_a_designada:
                             txt = f"🏫 <b>Escuela:</b> {escuela}\n"
@@ -229,11 +278,13 @@ def monitorear():
                             txt += "───────────────────\n"
                             buffer_cerradas.append(txt)
 
+                    # Actualizamos la memoria global para el botón
+                    CACHE_RESULTADOS = temp_cache
+
                     ahora = datetime.now(tz_ar)
                     hora_actual = ahora.hour
                     hora_str = ahora.strftime("%H:%M")
 
-                    # ENVIAR CARGOS NUEVOS
                     if buffer_nuevas:
                         bloque = ""
                         for idx, txt in enumerate(buffer_nuevas, 1):
@@ -243,7 +294,6 @@ def monitorear():
                                 bloque = ""
                                 time.sleep(2)
                                 
-                    # ENVIAR AVISOS DE CIERRE
                     if buffer_cerradas:
                         bloque = ""
                         for idx, txt in enumerate(buffer_cerradas, 1):
@@ -253,7 +303,6 @@ def monitorear():
                                 bloque = ""
                                 time.sleep(2)
                     
-                    # REGISTRO DE REPORTE DE SALUD
                     if (buffer_nuevas or buffer_cerradas) and hora_actual in HORAS_REPORTE:
                         ultimo_reporte_enviado = hora_actual
                     elif not buffer_nuevas and not buffer_cerradas and hora_actual in HORAS_REPORTE and ultimo_reporte_enviado != hora_actual:
@@ -263,14 +312,22 @@ def monitorear():
                 else:
                     print(f"[!] Consulta devuelta con estado {r.status_code}", flush=True)
 
-            print(f"[*] Revisión finalizada ({datetime.now(tz_ar).strftime('%H:%M')}).", flush=True)
+            print(f"[*] Revisión finalizada ({datetime.now(tz_ar).strftime('%H:%M')}). Caché: {len(CACHE_RESULTADOS)}", flush=True)
         except Exception as e:
             print(f"[-] Error: {e}", flush=True)
         
         time.sleep(900)
 
 if __name__ == "__main__":
+    # Lanzamos el servidor web
     web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
+    
+    # Lanzamos el escucha de botones de Telegram
+    telegram_thread = threading.Thread(target=escuchar_botones, daemon=True)
+    telegram_thread.start()
+    
     time.sleep(5)
+    
+    # Iniciamos el bucle principal de revisión
     monitorear()
