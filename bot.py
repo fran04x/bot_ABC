@@ -829,23 +829,18 @@ def monitorear():
 
                                 if estado_actual == "PUBLICADA":
                                     ranking = obtener_top_postulantes(session, id_o)
-                                    link = f"https://misservicios.abc.gob.ar/actos.publicos.digitales/postulantes/?oferta={id_o}&detalle={info.get('iddetalle', id_o)}&_t={ts}"
-                                    # Bloque de título y ubicación
-                                    txt = f"🏫 <b>{escuela}</b>\n"
+                                    link = f"https://misservicios.abc.gob.ar/actos.publicos.digitales/postulantes/?oferta={id_o}&detalle={info.get('iddetalle', id_o)}"
+                                    txt = f"🏫 <b>Escuela:</b> <code>{escuela}</code>\n"
                                     if direccion not in ("N/A", "-", ""):
-                                        txt += f"📍 {direccion}\n"
-                                    txt += "\n"
-
-                                    # Bloque temporal
-                                    txt += f"<b>Apertura/Cierre:</b> {inicio_oferta} — {cierre_oferta}\n"
-                                    txt += f"<b>Periodo:</b> {desde} — {hasta}\n\n"
-
-                                    # Bloque técnico
+                                        txt += f"📍 <b>Dirección:</b> {direccion}\n"
+                                    txt += f"🕒 <b>Inicio Oferta:</b> {inicio_oferta}\n"
+                                    txt += f"⏳ <b>Cierre Oferta:</b> {cierre_oferta}\n"
                                     if curso_division not in ("-", "", "N/A"):
-                                        txt += f"<b>Curso/Div:</b> {curso_division} | "
-                                    txt += f"<b>Jornada:</b> {jornada_texto} | <b>Revista:</b> {revista}\n\n"
-
-                                    # Bloque de puntaje
+                                        txt += f"👥 <b>Curso/Div:</b> {curso_division}\n"
+                                    txt += f"⏱ <b>Jornada:</b> {jornada_texto}\n"
+                                    txt += f"📝 <b>Revista:</b> {revista}\n"
+                                    txt += f"🟢 <b>Desde:</b> {desde}\n"
+                                    txt += f"🔴 <b>Hasta:</b> {hasta}\n"
                                     txt += f"🏆 <b>Puntajes:</b>\n{ranking}"
                                     txt += f"🔗 <a href=\"{html.escape(link, quote=True)}\">VER ESCUELA</a>\n"
                                     txt += "───────────────────\n"
