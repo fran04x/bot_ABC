@@ -651,6 +651,7 @@ def monitorear():
 
         # Enviamos el nuevo saludo inmortal
         sent_ids = enviar_telegram(msg_arranque, silencioso=True, con_boton=True, es_permanente=True)
+        FORZAR_REFRESH.set() # <-- Nueva: Fuerza la primera carga apenas inicia
         
         # Guardamos el ID de este nuevo saludo en Upstash para borrarlo en el próximo reinicio
         if base_url and sent_ids:
@@ -796,8 +797,8 @@ def monitorear():
                                         txt += f"📍 <b>Dirección:</b> {direccion}\n"
                                     txt += f"🕒 <b>Inicio Oferta:</b> {inicio_oferta}\n"
                                     txt += f"⏳ <b>Cierre Oferta:</b> {cierre_oferta}\n"
-                                    if curso != "-" or division != "-":
-                                        txt += f"👥 <b>Curso/Div:</b> {curso} - {division}\n"
+                                    if curso_division not in ("-", "", "N/A"):
+                                        txt += f"👥 <b>Curso/Div:</b> {curso_division}\n"
                                     txt += f"⏱ <b>Jornada:</b> {jornada_texto}\n"
                                     txt += f"📝 <b>Revista:</b> {revista}\n"
                                     txt += f"🟢 <b>Desde:</b> {desde}\n"
@@ -817,8 +818,8 @@ def monitorear():
                                         txt += f"📍 <b>Dirección:</b> {direccion}\n"
                                     txt += f"🕒 <b>Inicio Oferta:</b> {inicio_oferta}\n"
                                     txt += f"⏳ <b>Cierre Oferta:</b> {cierre_oferta}\n"
-                                    if curso != "-" or division != "-":
-                                        txt += f"👥 <b>Curso/Div:</b> {curso} - {division}\n"
+                                    if curso_division not in ("-", "", "N/A"):
+                                        txt += f"👥 <b>Curso/Div:</b> {curso_division}\n"
                                     txt += f"⏱ <b>Jornada:</b> {jornada_texto}\n"
                                     txt += f"📝 <b>Revista:</b> {revista}\n"
                                     txt += f"🟢 <b>Desde:</b> {desde}\n"
@@ -885,9 +886,27 @@ def monitorear():
 
                 # --- EL NUEVO SUEÑO LIGERO OPTIMIZADO ---
                 lock_perdido = False
-                for i in range(60): # 60 vueltas de 15 seg = 15 mins
-                    # wait(15) duerme 15 seg, PERO si tocás el botón despierta al instante y devuelve True
+                reporte_8am_ejecutado = False # Bandera para no repetir dentro del mismo minuto
+
+                for i in range(60):
+                    ahora_check = datetime.now(tz_ar)
+                    
+                    # Verificamos si son las 8:00 AM y no se ejecutó en este ciclo
+                    if ahora_check.hour == 8 and ahora_check.minute == 0 and not reporte_8am_ejecutado:
+                        print("[*] Son las 08:00 AM. Iniciando reporte automático...", flush=True)
+                        FORZAR_REFRESH.set()
+                        reporte_8am_ejecutado = True
+
                     desperto_por_boton = FORZAR_REFRESH.wait(timeout=15.0) 
+                    
+                    if desperto_por_boton:
+                        print("[*] Despertado por señal (Botón o Automático). Buscando datos...", flush=True)
+                        break 
+                    
+                    if i % 4 == 0:
+                        if not renovar_lock_instancia(LOCK_TTL_SEG, MONITOR_LOCK_KEY):
+                            lock_perdido = True
+                            break
                     
                     if desperto_por_boton:
                         print("[*] Botón presionado. Interrumpiendo sueño para buscar datos frescos...", flush=True)
