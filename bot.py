@@ -34,6 +34,10 @@ ULTIMA_CARGA_OK_TS = 0
 CACHE_LOCK = threading.Lock()
 FORZAR_REFRESH = threading.Event()
 CALLBACKS_PROCESADOS = {}
+MENSAJES_LOCK = threading.Lock()
+OFERTA_LOCK = threading.Lock()
+CALLBACK_LOCK = threading.Lock()
+UPSTASH_SESSION = requests.Session()
 INSTANCE_LOCK_KEY = os.environ.get("INSTANCE_LOCK_KEY", "abcbot_instance_lock")
 LISTENER_LOCK_KEY = os.environ.get("LISTENER_LOCK_KEY", f"{INSTANCE_LOCK_KEY}:listener")
 MONITOR_LOCK_KEY = os.environ.get("MONITOR_LOCK_KEY", f"{INSTANCE_LOCK_KEY}:monitor")
@@ -119,7 +123,8 @@ def enviar_telegram(mensaje, silencioso=False, con_boton=False, es_permanente=Fa
                 message_id = data["result"]["message_id"]
                 sent_ids.append(message_id)
                 if not es_permanente:
-                    MENSAJES_ENVIADOS.add(message_id)
+                    with MENSAJES_LOCK:
+                        MENSAJES_ENVIADOS.add(message_id)
                     upstash_cmd("sadd", "mensajes_borrables", message_id) # <-- GUARDADO EN NUBE
             return
         except requests.RequestException as error:
@@ -133,7 +138,8 @@ def enviar_telegram(mensaje, silencioso=False, con_boton=False, es_permanente=Fa
                         message_id = data["result"]["message_id"]
                         sent_ids.append(message_id)
                         if not es_permanente:
-                            MENSAJES_ENVIADOS.add(message_id)
+                            with MENSAJES_LOCK:
+                                MENSAJES_ENVIADOS.add(message_id)
                             upstash_cmd("sadd", "mensajes_borrables", message_id) # <-- GUARDADO EN NUBE
                     return
                 except Exception:
@@ -172,7 +178,7 @@ def upstash_cmd(*parts, timeout=5):
         return None
     try:
         url = f"{base_url}/" + "/".join(str(p) for p in parts)
-        resp = requests.get(url, headers=headers, timeout=timeout)
+        resp = UPSTASH_SESSION.get(url, headers=headers, timeout=timeout)
         if resp.status_code == 200:
             return resp.json().get("result")
     except Exception:
@@ -196,14 +202,14 @@ def renovar_lock_instancia(ttl_seg=LOCK_TTL_SEG, lock_key=INSTANCE_LOCK_KEY):
     if not base_url:
         return True
 
-    owner_actual = upstash_cmd("get", lock_key)
-    
-    # Si owner_actual es None, puede ser un micro-corte de red de Upstash.
-    # Si no es None y es diferente a nosotros, perdimos el lock de verdad.
-    if owner_actual is not None and owner_actual != INSTANCE_OWNER:
+    # SET con XX (solo si existe) + GET devuelve el valor anterior en un solo round-trip
+    owner_previo = upstash_cmd("set", lock_key, INSTANCE_OWNER, "EX", ttl_seg, "XX", "GET")
+
+    # Si owner_previo es None, puede ser micro-corte de red o key expirada.
+    # Si no es None y es diferente a nosotros, otra instancia tiene el lock.
+    if owner_previo is not None and owner_previo != INSTANCE_OWNER:
         return False
 
-    upstash_cmd("set", lock_key, INSTANCE_OWNER, "EX", ttl_seg, "XX")
     # Asumimos que sigue vivo para no matarlo por un parpadeo del WiFi de Render
     return True
 
@@ -247,59 +253,64 @@ def callback_ya_procesado(callback_id, ttl_seg=300, max_items=2000):
     ahora = time.time()
     expirar = ahora - ttl_seg
 
-    for cb_id, ts in list(CALLBACKS_PROCESADOS.items()):
-        if ts < expirar:
-            CALLBACKS_PROCESADOS.pop(cb_id, None)
+    with CALLBACK_LOCK:
+        for cb_id, ts in list(CALLBACKS_PROCESADOS.items()):
+            if ts < expirar:
+                CALLBACKS_PROCESADOS.pop(cb_id, None)
 
-    if len(CALLBACKS_PROCESADOS) > max_items:
-        cantidad = len(CALLBACKS_PROCESADOS) - max_items
-        for cb_id, _ in sorted(CALLBACKS_PROCESADOS.items(), key=lambda kv: kv[1])[:cantidad]:
-            CALLBACKS_PROCESADOS.pop(cb_id, None)
+        if len(CALLBACKS_PROCESADOS) > max_items:
+            cantidad = len(CALLBACKS_PROCESADOS) - max_items
+            for cb_id, _ in sorted(CALLBACKS_PROCESADOS.items(), key=lambda kv: kv[1])[:cantidad]:
+                CALLBACKS_PROCESADOS.pop(cb_id, None)
 
-    if callback_id in CALLBACKS_PROCESADOS:
-        return True
+        if callback_id in CALLBACKS_PROCESADOS:
+            return True
 
-    CALLBACKS_PROCESADOS[callback_id] = ahora
-    return False
+        CALLBACKS_PROCESADOS[callback_id] = ahora
+        return False
 
 def guardar_mensaje_oferta(id_oferta, message_id):
-    MENSAJE_POR_OFERTA[str(id_oferta)] = int(message_id)
+    with OFERTA_LOCK:
+        MENSAJE_POR_OFERTA[str(id_oferta)] = int(message_id)
     base_url, headers = _upstash_headers()
     if not base_url:
         return
     try:
         # Se agrega /EX/604800 para que la memoria visual también caduque a los 7 días
-        requests.get(f"{base_url}/set/oferta_msg_{id_oferta}/{int(message_id)}/EX/604800", headers=headers, timeout=5)
+        UPSTASH_SESSION.get(f"{base_url}/set/oferta_msg_{id_oferta}/{int(message_id)}/EX/604800", headers=headers, timeout=5)
     except Exception:
         pass
 
 def obtener_mensaje_oferta(id_oferta):
     clave = str(id_oferta)
-    if clave in MENSAJE_POR_OFERTA:
-        return MENSAJE_POR_OFERTA[clave]
+    with OFERTA_LOCK:
+        if clave in MENSAJE_POR_OFERTA:
+            return MENSAJE_POR_OFERTA[clave]
 
     base_url, headers = _upstash_headers()
     if not base_url:
         return None
 
     try:
-        resp = requests.get(f"{base_url}/get/oferta_msg_{id_oferta}", headers=headers, timeout=5)
+        resp = UPSTASH_SESSION.get(f"{base_url}/get/oferta_msg_{id_oferta}", headers=headers, timeout=5)
         if resp.status_code == 200:
             result = resp.json().get("result")
             if result not in (None, ""):
-                MENSAJE_POR_OFERTA[clave] = int(result)
-                return MENSAJE_POR_OFERTA[clave]
+                with OFERTA_LOCK:
+                    MENSAJE_POR_OFERTA[clave] = int(result)
+                return int(result)
     except Exception:
         pass
     return None
 
 def eliminar_mensaje_oferta(id_oferta):
-    MENSAJE_POR_OFERTA.pop(str(id_oferta), None)
+    with OFERTA_LOCK:
+        MENSAJE_POR_OFERTA.pop(str(id_oferta), None)
     base_url, headers = _upstash_headers()
     if not base_url:
         return
     try:
-        requests.get(f"{base_url}/del/oferta_msg_{id_oferta}", headers=headers, timeout=5)
+        UPSTASH_SESSION.get(f"{base_url}/del/oferta_msg_{id_oferta}", headers=headers, timeout=5)
     except Exception:
         pass
 
@@ -412,7 +423,8 @@ def limpiar_chat():
     url_delete = f"https://api.telegram.org/bot{TOKEN}/deleteMessage"
     
     # 1. Juntamos los de la memoria RAM actual
-    mensajes_a_borrar = set(MENSAJES_ENVIADOS)
+    with MENSAJES_LOCK:
+        mensajes_a_borrar = set(MENSAJES_ENVIADOS)
     
     # 2. Rescatamos los fantasmas del bot anterior desde Upstash
     fantasmas = upstash_cmd("smembers", "mensajes_borrables")
@@ -431,7 +443,8 @@ def limpiar_chat():
             pass
             
     # 4. Limpiamos la memoria y la base de datos
-    MENSAJES_ENVIADOS.clear()
+    with MENSAJES_LOCK:
+        MENSAJES_ENVIADOS.clear()
     upstash_cmd("del", "mensajes_borrables")
 
 # --- TELEGRAM: LISTENER DE BOTONES ---
@@ -687,6 +700,7 @@ def monitorear():
         HORAS_REPORTE = {8, 11, 14, 17, 20}
         ultimo_reporte_enviado = None
         tz_ar = timezone(timedelta(hours=-3))
+        ejecutado_en_minuto = False
 
         try:
             while True: # Bucle de trabajo
@@ -921,7 +935,6 @@ def monitorear():
                 # --- EL NUEVO SUEÑO LIGERO OPTIMIZADO ---
                 lock_perdido = False
                 HORAS_AUTO = {8, 12, 17}
-                ejecutado_en_minuto = False 
 
                 for i in range(60):
                     ahora_check = datetime.now(tz_ar)
@@ -939,16 +952,7 @@ def monitorear():
                     if desperto_por_boton:
                         break 
                     
-                    if i % 4 == 0:
-                        if not renovar_lock_instancia(LOCK_TTL_SEG, MONITOR_LOCK_KEY):
-                            lock_perdido = True
-                            break
-                    
-                    if desperto_por_boton:
-                        print("[*] Botón presionado. Interrumpiendo sueño para buscar datos frescos...", flush=True)
-                        break # Rompe el ciclo de 15 mins y arranca la búsqueda de inmediato
-                    
-                    # Renovamos el candado cada 4 vueltas (1 minuto exacto) 
+                    # Renovamos el candado cada 4 vueltas (~1 minuto)
                     if i % 4 == 0:
                         if not renovar_lock_instancia(LOCK_TTL_SEG, MONITOR_LOCK_KEY):
                             lock_perdido = True
