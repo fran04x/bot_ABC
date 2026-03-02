@@ -667,6 +667,39 @@ def limpiar_direccion(texto):
     
     return t
 
+def envolver_texto_sin_cortar_palabras(texto, max_chars=30):
+    if texto in (None, "", "N/A", "-"):
+        return "N/A"
+
+    limpio = re.sub(r'\s+', ' ', str(texto)).strip()
+    if not limpio:
+        return "N/A"
+
+    palabras = limpio.split(" ")
+    lineas = []
+    linea_actual = ""
+
+    for palabra in palabras:
+        if not linea_actual:
+            linea_actual = palabra
+            continue
+
+        candidato = f"{linea_actual} {palabra}"
+        if len(candidato) <= max_chars:
+            linea_actual = candidato
+        else:
+            lineas.append(linea_actual)
+            linea_actual = palabra
+
+    if linea_actual:
+        lineas.append(linea_actual)
+
+    return "\n".join(lineas)
+
+def construir_url_oferta(id_oferta):
+    base = "https://misservicios.abc.gob.ar/actos.publicos.digitales/"
+    return f"{base}?idoferta={id_oferta}"
+
 # --- MONITOREO PRINCIPAL ---
 def monitorear():
     global CACHE_RESULTADOS, ULTIMA_CARGA_OK_TS
@@ -755,7 +788,8 @@ def monitorear():
                                 escuela = html.escape(str(info.get('escuela', 'N/A')))
                                 curso_division = html.escape(str(info.get('cursodivision', '-')).strip())
                                 direccion_raw = str(info.get('domiciliodesempeno', info.get('domicilio', 'N/A')))
-                                direccion = html.escape(limpiar_direccion(direccion_raw))
+                                direccion_formateada = envolver_texto_sin_cortar_palabras(limpiar_direccion(direccion_raw), max_chars=30)
+                                direccion = html.escape(direccion_formateada)
                                 revista_raw = str(info.get('supl_revista', '')).upper()
                                 if revista_raw == 'S':
                                     revista = "Suplencia"
@@ -783,6 +817,7 @@ def monitorear():
                                 inicio_oferta_ts = extraer_timestamp(info.get('iniciooferta'))
 
                                 ranking, contiene_doc_objetivo = obtener_top_postulantes(session, id_o)
+                                url_oferta = html.escape(construir_url_oferta(id_o), quote=True)
                                 txt = f"🏫 Escuela: {escuela}\n"
                                 if direccion not in ("N/A", "-", ""):
                                     txt += f"📍 Dirección: {direccion}\n"
@@ -802,8 +837,11 @@ def monitorear():
                                 txt += "\n"
                                 txt += "🏆 Puntajes\n"
                                 txt += f"{ranking}"
+                                txt += f"\n🌐 <a href=\"{url_oferta}\">ver escuela en la web</a>\n"
 
-                                temp_cache_ordenable.append((contiene_doc_objetivo, inicio_oferta_ts, txt))
+                                txt_listado = f"{txt}\n------------------------------\n"
+
+                                temp_cache_ordenable.append((contiene_doc_objetivo, inicio_oferta_ts, txt_listado))
                                 ofertas_en_vuelta_detalle[id_o] = (txt, contiene_doc_objetivo, inicio_oferta_ts, es_jornada_completa)
 
                             temp_cache_ordenable.sort(key=lambda x: (x[0], x[1]))
