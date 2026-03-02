@@ -670,6 +670,9 @@ def limpiar_direccion(texto):
 # --- MONITOREO PRINCIPAL ---
 def monitorear():
     global CACHE_RESULTADOS, ULTIMA_CARGA_OK_TS
+    limpieza_inicial_hecha = False
+    linea_base_inicializada = False
+    ofertas_conocidas_ids = set()
     
     while True: # Bucle de supervivencia
         if not adquirir_lock_instancia(LOCK_TTL_SEG, MONITOR_LOCK_KEY):
@@ -679,14 +682,12 @@ def monitorear():
 
         print("[*] Monitor ACTIVO: Lock adquirido. Iniciando...", flush=True)
 
-        # --- NUEVA LÓGICA: LIMPIEZA TOTAL AL ARRANCAR ---
-        print("[*] Limpiando mensajes fantasmas de la sesión anterior...", flush=True)
-        limpiar_chat()
-        # ------------------------------------------------
+        if not limpieza_inicial_hecha:
+            print("[*] Limpiando mensajes fantasmas de la sesión anterior...", flush=True)
+            limpiar_chat()
+            limpieza_inicial_hecha = True
 
         FORZAR_REFRESH.set()
-
-        ofertas_vistas_local = set()
         tz_ar = timezone(timedelta(hours=-3))
 
         try:
@@ -740,26 +741,16 @@ def monitorear():
                             # -------------------------------------------------------------------------
                             
                             procesados_en_vuelta = set()
+                            ofertas_en_vuelta_ids = set()
+                            ofertas_en_vuelta_detalle = {}
 
                             for info in hallazgos:
                                 id_o = str(info.get('idoferta'))
+                                ofertas_en_vuelta_ids.add(id_o)
 
                                 if id_o in procesados_en_vuelta:
                                     continue
                                 procesados_en_vuelta.add(id_o)
-
-                                es_nueva_y_publicada = False
-                                if UPSTASH_URL and UPSTASH_TOKEN:
-                                    # Detección atómica de novedad sin GET previo
-                                    result = upstash_cmd("set", f"oferta_{id_o}", "PUBLICADA", "EX", 604800, "NX")
-                                    if result is None:
-                                        es_nueva_y_publicada = id_o not in ofertas_vistas_local
-                                        ofertas_vistas_local.add(id_o)
-                                    else:
-                                        es_nueva_y_publicada = str(result).upper() == "OK"
-                                else:
-                                    es_nueva_y_publicada = id_o not in ofertas_vistas_local
-                                    ofertas_vistas_local.add(id_o)
 
                                 escuela = html.escape(str(info.get('escuela', 'N/A')))
                                 curso_division = html.escape(str(info.get('cursodivision', '-')).strip())
@@ -813,9 +804,7 @@ def monitorear():
                                 txt += f"{ranking}"
 
                                 temp_cache_ordenable.append((contiene_doc_objetivo, inicio_oferta_ts, txt))
-
-                                if es_nueva_y_publicada:
-                                    buffer_nuevas.append((id_o, txt, contiene_doc_objetivo, inicio_oferta_ts, es_jornada_completa))
+                                ofertas_en_vuelta_detalle[id_o] = (txt, contiene_doc_objetivo, inicio_oferta_ts, es_jornada_completa)
 
                             temp_cache_ordenable.sort(key=lambda x: (x[0], x[1]))
                             temp_cache = [item[2] for item in temp_cache_ordenable]
@@ -824,8 +813,18 @@ def monitorear():
                                 CACHE_RESULTADOS = temp_cache
                             ULTIMA_CARGA_OK_TS = time.time()
 
-                            if POST_FETCH_GRACE_SECONDS > 60:
+                            if POST_FETCH_GRACE_SECONDS > 0:
                                 time.sleep(POST_FETCH_GRACE_SECONDS)
+
+                            if linea_base_inicializada:
+                                ids_nuevos = ofertas_en_vuelta_ids - ofertas_conocidas_ids
+                                for id_nuevo in ids_nuevos:
+                                    detalle = ofertas_en_vuelta_detalle.get(id_nuevo)
+                                    if detalle:
+                                        txt, contiene_doc_objetivo, inicio_oferta_ts, es_jc = detalle
+                                        buffer_nuevas.append((id_nuevo, txt, contiene_doc_objetivo, inicio_oferta_ts, es_jc))
+
+                            ofertas_conocidas_ids = set(ofertas_en_vuelta_ids)
 
                             limpiar_chat()
                             if temp_cache:
@@ -844,7 +843,7 @@ def monitorear():
                             ahora = datetime.now(tz_ar)
                             hora_str = ahora.strftime("%H:%M")
 
-                            if buffer_nuevas:
+                            if linea_base_inicializada and buffer_nuevas:
                                 buffer_nuevas.sort(key=lambda x: (x[2], x[3]))
                                 for id_o, txt, _, _, es_jc in buffer_nuevas:
                                     
@@ -858,6 +857,10 @@ def monitorear():
                                         es_permanente=False
                                     )
                                     time.sleep(2)
+
+                            if not linea_base_inicializada:
+                                linea_base_inicializada = True
+                                print("[*] Línea base inicial cargada. A partir de ahora solo se notifican cargos realmente nuevos.", flush=True)
 
                         else:
                             print(f"[!] Consulta devuelta con estado {r.status_code}", flush=True)
