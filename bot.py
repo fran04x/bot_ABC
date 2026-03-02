@@ -667,7 +667,7 @@ def limpiar_direccion(texto):
     
     return t
 
-def envolver_texto_sin_cortar_palabras(texto, max_chars=30):
+def envolver_texto_sin_cortar_palabras(texto, max_chars=18):
     if texto in (None, "", "N/A", "-"):
         return "N/A"
 
@@ -696,9 +696,9 @@ def envolver_texto_sin_cortar_palabras(texto, max_chars=30):
 
     return "\n".join(lineas)
 
-def construir_url_oferta(id_oferta):
-    base = "https://misservicios.abc.gob.ar/actos.publicos.digitales/"
-    return f"{base}?idoferta={id_oferta}"
+def construir_url_oferta(id_oferta, id_detalle):
+    base = "https://misservicios.abc.gob.ar/actos.publicos.digitales/postulantes/"
+    return f"{base}?oferta={id_oferta}&detalle={id_detalle}"
 
 # --- MONITOREO PRINCIPAL ---
 def monitorear():
@@ -788,7 +788,7 @@ def monitorear():
                                 escuela = html.escape(str(info.get('escuela', 'N/A')))
                                 curso_division = html.escape(str(info.get('cursodivision', '-')).strip())
                                 direccion_raw = str(info.get('domiciliodesempeno', info.get('domicilio', 'N/A')))
-                                direccion_formateada = envolver_texto_sin_cortar_palabras(limpiar_direccion(direccion_raw), max_chars=30)
+                                direccion_formateada = envolver_texto_sin_cortar_palabras(limpiar_direccion(direccion_raw), max_chars=18)
                                 direccion = html.escape(direccion_formateada)
                                 revista_raw = str(info.get('supl_revista', '')).upper()
                                 if revista_raw == 'S':
@@ -816,9 +816,13 @@ def monitorear():
                                 inicio_oferta = html.escape(inicio_oferta_txt)
                                 inicio_oferta_ts = extraer_timestamp(info.get('iniciooferta'))
 
+                                id_detalle = str(info.get('iddetalle', '')).strip()
+                                if not id_detalle:
+                                    id_detalle = "0"
+
                                 ranking, contiene_doc_objetivo = obtener_top_postulantes(session, id_o)
-                                url_oferta = html.escape(construir_url_oferta(id_o), quote=True)
-                                txt = f"🏫 Escuela: {escuela}\n"
+                                url_oferta = html.escape(construir_url_oferta(id_o, id_detalle), quote=True)
+                                txt = f"\n🏫 Escuela: {escuela}\n"
                                 if direccion not in ("N/A", "-", ""):
                                     txt += f"📍 Dirección: {direccion}\n"
                                 txt += "\n"
@@ -837,9 +841,9 @@ def monitorear():
                                 txt += "\n"
                                 txt += "🏆 Puntajes\n"
                                 txt += f"{ranking}"
-                                txt += f"\n🌐 <a href=\"{url_oferta}\">ver escuela en la web</a>\n"
+                                txt += f"\n🌐 <a href=\"{url_oferta}\">Ver escuela en la WEB</a>"
 
-                                txt_listado = f"{txt}\n------------------------------\n"
+                                txt_listado = f"{txt}\n────────────────────────────────\n"
 
                                 temp_cache_ordenable.append((contiene_doc_objetivo, inicio_oferta_ts, txt_listado))
                                 ofertas_en_vuelta_detalle[id_o] = (txt, contiene_doc_objetivo, inicio_oferta_ts, es_jornada_completa)
@@ -885,7 +889,7 @@ def monitorear():
                                 buffer_nuevas.sort(key=lambda x: (x[2], x[3]))
                                 for id_o, txt, _, _, es_jc in buffer_nuevas:
                                     
-                                    mensaje_nuevo = f"🚨 Nuevo cargo ({hora_str} hs)\n\n{txt}"
+                                    mensaje_nuevo = f"🚨 Nuevo cargo ({hora_str} hs)\n\n{txt}\n────────────────────────────────\n"
                                     
                                     # Solo emitirá sonido (silencioso=False) si es Jornada Completa.
                                     # De lo contrario, se envía silenciado.
