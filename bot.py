@@ -45,19 +45,42 @@ CALLBACK_LOCK = threading.Lock()
 UPSTASH_SESSION = requests.Session()
 TELEGRAM_SESSION = requests.Session()
 INSTANCE_LOCK_KEY = os.environ.get("INSTANCE_LOCK_KEY", "abcbot_instance_lock")
+PASSIVE_INSTANCE_LOCK_KEY = os.environ.get("PASSIVE_INSTANCE_LOCK_KEY", f"{INSTANCE_LOCK_KEY}:passive")
 LISTENER_LOCK_KEY = os.environ.get("LISTENER_LOCK_KEY", f"{INSTANCE_LOCK_KEY}:listener")
 MONITOR_LOCK_KEY = os.environ.get("MONITOR_LOCK_KEY", f"{INSTANCE_LOCK_KEY}:monitor")
 INSTANCE_OWNER = f"{os.environ.get('HOSTNAME', 'local')}-{os.getpid()}-{int(time.time())}"
 BOT_SESSION_ID = os.environ.get("BOT_SESSION_ID", f"{int(time.time())}-{os.getpid()}")[-24:]
 CALLBACK_GET_RESULTADOS = f"get_resultados:{BOT_SESSION_ID}"
+INSTANCE_ADMISSION_MODE = None
+INSTANCE_ADMISSION_LAST_RENEW_TS = 0.0
+INSTANCE_ADMISSION_LOCK = threading.Lock()
 
 # --- CANDADOS CORTOS PARA DEPLOYS RÁPIDOS ---
 try:
-    LOCK_TTL_SEG = int(os.environ.get("INSTANCE_LOCK_TTL_SECONDS", "60"))
-    if LOCK_TTL_SEG < 60:
-        LOCK_TTL_SEG = 600
+    LOCK_TTL_SEG = int(os.environ.get("INSTANCE_LOCK_TTL_SECONDS", "300"))
+    if LOCK_TTL_SEG < 300:
+        LOCK_TTL_SEG = 300
 except ValueError:
-    LOCK_TTL_SEG = 600
+    LOCK_TTL_SEG = 300
+
+try:
+    LOCK_RENEW_INTERVAL_SECONDS = int(os.environ.get("LOCK_RENEW_INTERVAL_SECONDS", "180"))
+except ValueError:
+    LOCK_RENEW_INTERVAL_SECONDS = 180
+if LOCK_RENEW_INTERVAL_SECONDS < 15:
+    LOCK_RENEW_INTERVAL_SECONDS = 15
+if LOCK_RENEW_INTERVAL_SECONDS >= LOCK_TTL_SEG:
+    LOCK_RENEW_INTERVAL_SECONDS = max(15, LOCK_TTL_SEG - 5)
+
+_refresh_hours_default = {6, 9, 12, 15, 18, 21}
+try:
+    _refresh_hours_raw = os.environ.get("TELEGRAM_REFRESH_ACTIVE_HOURS", "6,9,12,15,18,21")
+    ACTIVE_REFRESH_HOURS = sorted({int(x.strip()) for x in _refresh_hours_raw.split(",") if x.strip()})
+    ACTIVE_REFRESH_HOURS = [h for h in ACTIVE_REFRESH_HOURS if 0 <= h <= 23]
+    if not ACTIVE_REFRESH_HOURS:
+        ACTIVE_REFRESH_HOURS = sorted(_refresh_hours_default)
+except Exception:
+    ACTIVE_REFRESH_HOURS = sorted(_refresh_hours_default)
 
 try:
     TELEGRAM_MAX_MESSAGE_LEN = int(os.environ.get("TELEGRAM_MAX_MESSAGE_LEN", "4096"))
@@ -240,9 +263,75 @@ def liberar_lock_instancia(lock_key=INSTANCE_LOCK_KEY):
     if owner_actual == INSTANCE_OWNER:
         upstash_cmd("del", lock_key)
 
+def _set_admission_mode(mode):
+    global INSTANCE_ADMISSION_MODE
+    with INSTANCE_ADMISSION_LOCK:
+        INSTANCE_ADMISSION_MODE = mode
+
+def _get_admission_mode():
+    with INSTANCE_ADMISSION_LOCK:
+        return INSTANCE_ADMISSION_MODE
+
+def admitir_instancia(ttl_seg=LOCK_TTL_SEG):
+    global INSTANCE_ADMISSION_LAST_RENEW_TS
+    base_url, _ = _upstash_headers()
+    if not base_url:
+        _set_admission_mode("active")
+        INSTANCE_ADMISSION_LAST_RENEW_TS = time.time()
+        return True
+
+    if adquirir_lock_instancia(ttl_seg, INSTANCE_LOCK_KEY):
+        _set_admission_mode("active")
+        INSTANCE_ADMISSION_LAST_RENEW_TS = time.time()
+        return True
+
+    if adquirir_lock_instancia(ttl_seg, PASSIVE_INSTANCE_LOCK_KEY):
+        _set_admission_mode("passive")
+        INSTANCE_ADMISSION_LAST_RENEW_TS = time.time()
+        return True
+
+    _set_admission_mode(None)
+    return False
+
+def mantener_admision_instancia(force=False, ttl_seg=LOCK_TTL_SEG):
+    global INSTANCE_ADMISSION_LAST_RENEW_TS
+    base_url, _ = _upstash_headers()
+    if not base_url:
+        return True
+
+    ahora = time.time()
+    if not force and (ahora - INSTANCE_ADMISSION_LAST_RENEW_TS) < LOCK_RENEW_INTERVAL_SECONDS:
+        return True
+
+    mode = _get_admission_mode()
+    if mode == "active":
+        key = INSTANCE_LOCK_KEY
+    elif mode == "passive":
+        key = PASSIVE_INSTANCE_LOCK_KEY
+    else:
+        return False
+
+    if renovar_lock_instancia(ttl_seg, key):
+        INSTANCE_ADMISSION_LAST_RENEW_TS = ahora
+        return True
+
+    if adquirir_lock_instancia(ttl_seg, key):
+        INSTANCE_ADMISSION_LAST_RENEW_TS = ahora
+        return True
+
+    return False
+
+def liberar_admision_instancia():
+    mode = _get_admission_mode()
+    if mode == "active":
+        liberar_lock_instancia(INSTANCE_LOCK_KEY)
+    elif mode == "passive":
+        liberar_lock_instancia(PASSIVE_INSTANCE_LOCK_KEY)
+
 # --- MANEJO DE CIERRE SEGURO (GRACEFUL SHUTDOWN) ---
 def limpieza_salida():
     print("\n[!] Apagando instancia elegantemente. Liberando candados de Upstash...", flush=True)
+    liberar_admision_instancia()
     liberar_lock_instancia(MONITOR_LOCK_KEY)
     liberar_lock_instancia(LISTENER_LOCK_KEY)
 
@@ -362,6 +451,8 @@ def enviar_ofertas_sin_cortes(
 
 def limpiar_chat():
     global MENSAJES_ENVIADOS
+    if not TOKEN or not CHAT_ID:
+        return
     url_delete = f"https://api.telegram.org/bot{TOKEN}/deleteMessage"
     
     # 1. Juntamos los de la memoria RAM actual
@@ -423,6 +514,11 @@ def limpiar_chat():
 # --- TELEGRAM: LISTENER DE BOTONES ---
 def escuchar_botones():
     global CACHE_RESULTADOS, ULTIMA_CARGA_OK_TS
+
+    if not TOKEN or not CHAT_ID:
+        print("[!] Listener deshabilitado: faltan TELEGRAM_TOKEN o TELEGRAM_CHAT_ID.", flush=True)
+        while True:
+            time.sleep(60)
     
     while True: # Bucle de supervivencia (Mantiene vivo el hilo si pierde el lock)
         if not adquirir_lock_instancia(LOCK_TTL_SEG, LISTENER_LOCK_KEY):
@@ -431,6 +527,7 @@ def escuchar_botones():
             continue # Vuelve a intentar adquirir
 
         print("[*] Listener ACTIVO: Lock adquirido.", flush=True)
+        lock_ultimo_renuevo_ts = time.time()
         offset = 0
         url_updates = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
         url_answer = f"https://api.telegram.org/bot{TOKEN}/answerCallbackQuery"
@@ -454,12 +551,18 @@ def escuchar_botones():
         
         try:
             while True: # Bucle de trabajo
-                if not renovar_lock_instancia(LOCK_TTL_SEG, LISTENER_LOCK_KEY):
-                    print("[!] Listener perdió el lock. Volviendo a modo pasivo...", flush=True)
-                    break # Rompe este while y vuelve al Bucle de supervivencia
+                if not mantener_admision_instancia():
+                    print("[!] Listener perdió admisión de instancia. Cerrando proceso.", flush=True)
+                    sys.exit(0)
+
+                ahora_lock = time.time()
+                if (ahora_lock - lock_ultimo_renuevo_ts) >= LOCK_RENEW_INTERVAL_SECONDS:
+                    if not renovar_lock_instancia(LOCK_TTL_SEG, LISTENER_LOCK_KEY):
+                        print("[!] Listener perdió el lock. Volviendo a modo pasivo...", flush=True)
+                        break
+                    lock_ultimo_renuevo_ts = ahora_lock
 
                 try:
-                    # Usamos timeout=20 para que despierte y pueda renovar el candado de 60s
                     r = TELEGRAM_SESSION.get(url_updates, params={"offset": offset, "timeout": 20}, timeout=30)
                     if r.status_code == 200:
                         updates = r.json().get("result", [])
@@ -706,21 +809,27 @@ def monitorear():
     limpieza_inicial_hecha = False
     linea_base_inicializada = False
     ofertas_conocidas_ids = set()
+    ultimo_refresh_slot = None
+    refresco_inicial_pendiente = True
     
     while True: # Bucle de supervivencia
+        if not mantener_admision_instancia():
+            print("[!] Se perdió la admisión de instancia. Cerrando proceso para evitar sobrepoblación.", flush=True)
+            sys.exit(0)
+
         if not adquirir_lock_instancia(LOCK_TTL_SEG, MONITOR_LOCK_KEY):
             print("[!] Monitor pasivo: otra instancia está activa. Esperando pacientemente...", flush=True)
             time.sleep(15)
             continue
 
         print("[*] Monitor ACTIVO: Lock adquirido. Iniciando...", flush=True)
+        lock_ultimo_renuevo_ts = time.time()
 
         if not limpieza_inicial_hecha:
             print("[*] Limpiando mensajes fantasmas de la sesión anterior...", flush=True)
             limpiar_chat()
             limpieza_inicial_hecha = True
 
-        FORZAR_REFRESH.set()
         tz_ar = timezone(timedelta(hours=-3))
 
         try:
@@ -728,10 +837,12 @@ def monitorear():
                 if not renovar_lock_instancia(LOCK_TTL_SEG, MONITOR_LOCK_KEY):
                     print("[!] Se perdió el lock de instancia. Deteniendo para evitar duplicados...", flush=True)
                     break # Vuelve al modo pasivo
+                lock_ultimo_renuevo_ts = time.time()
 
                 buffer_nuevas = []
                 temp_cache = []
                 temp_cache_ordenable = []
+                refresh_forzado = FORZAR_REFRESH.is_set()
                 FORZAR_REFRESH.clear()
 
                 try:
@@ -867,22 +978,29 @@ def monitorear():
                                         buffer_nuevas.append((id_nuevo, txt, contiene_doc_objetivo, inicio_oferta_ts, es_jc))
 
                             ofertas_conocidas_ids = set(ofertas_en_vuelta_ids)
-
-                            limpiar_chat()
-                            if temp_cache:
-                                enviar_ofertas_sin_cortes(
-                                    temp_cache,
-                                    encabezado=f"📊 Listado de cargos ({len(temp_cache)} resultados)",
-                                    silencioso=True,
-                                    es_permanente=False,
-                                    repetir_encabezado=False,
-                                    pausa_segundos=1,
-                                    con_boton_al_final=True
-                                )
-                            else:
-                                enviar_telegram("📭 Sin cargos activos en este momento.", silencioso=True, es_permanente=False, con_boton=True)
-
                             ahora = datetime.now(tz_ar)
+                            slot_refresco = ahora.strftime("%Y-%m-%d-%H") if ahora.hour in ACTIVE_REFRESH_HOURS else None
+                            refresco_programado = slot_refresco is not None and slot_refresco != ultimo_refresh_slot
+                            debe_refrescar_telegram = refresh_forzado or refresco_programado or refresco_inicial_pendiente
+
+                            if debe_refrescar_telegram:
+                                limpiar_chat()
+                                if temp_cache:
+                                    enviar_ofertas_sin_cortes(
+                                        temp_cache,
+                                        encabezado=f"📊 Listado de cargos ({len(temp_cache)} resultados)",
+                                        silencioso=True,
+                                        es_permanente=False,
+                                        repetir_encabezado=False,
+                                        pausa_segundos=1,
+                                        con_boton_al_final=True
+                                    )
+                                else:
+                                    enviar_telegram("📭 Sin cargos activos en este momento.", silencioso=True, es_permanente=False, con_boton=True)
+                                if slot_refresco is not None:
+                                    ultimo_refresh_slot = slot_refresco
+                                refresco_inicial_pendiente = False
+
                             hora_str = ahora.strftime("%H:%M")
 
                             if linea_base_inicializada and buffer_nuevas:
@@ -916,15 +1034,20 @@ def monitorear():
 
                 for i in range(60):
                     desperto_por_boton = FORZAR_REFRESH.wait(timeout=15.0) 
+
+                    if not mantener_admision_instancia():
+                        print("[!] Se perdió la admisión de instancia durante espera. Cerrando proceso.", flush=True)
+                        sys.exit(0)
                     
                     if desperto_por_boton:
                         break 
                     
-                    # Renovamos el candado cada 4 vueltas (~1 minuto)
-                    if i % 4 == 0:
+                    ahora_lock = time.time()
+                    if (ahora_lock - lock_ultimo_renuevo_ts) >= LOCK_RENEW_INTERVAL_SECONDS:
                         if not renovar_lock_instancia(LOCK_TTL_SEG, MONITOR_LOCK_KEY):
                             lock_perdido = True
                             break
+                        lock_ultimo_renuevo_ts = ahora_lock
                         
                 if lock_perdido:
                     print("[!] Lock caducó mientras dormía o fue robado. Saliendo de guardia...", flush=True)
@@ -934,6 +1057,12 @@ def monitorear():
             liberar_lock_instancia(MONITOR_LOCK_KEY)
 
 if __name__ == "__main__":
+    if not admitir_instancia(LOCK_TTL_SEG):
+        print("[!] Ya existe una instancia activa y una pasiva. Esta instancia se cerrará.", flush=True)
+        sys.exit(0)
+
+    print(f"[*] Admisión de instancia concedida en modo {_get_admission_mode()}.", flush=True)
+
     web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
     
